@@ -248,7 +248,14 @@ export default function LibraryPage() {
   const [refs, setRefs] = useState<RefSummary[]>([]);
   const [modal, setModal] = useState<{ url: string; title: string } | null>(null);
 
-  const openPdf = (url: string, title: string) => setModal({ url, title });
+  const openPdf = (url: string, title: string) => {
+    // On mobile, open directly in browser — avoids iframe PDF issues on iOS
+    if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    } else {
+      setModal({ url, title });
+    }
+  };
   const closePdf = () => setModal(null);
 
   useEffect(() => {

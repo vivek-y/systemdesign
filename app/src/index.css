@@ -1,20 +1,3 @@
-/* Show bottom nav only on mobile */
-@media (min-width: 769px) {
-  nav[style*="position: fixed"] {
-    display: none !important;
-  }
-  .bottom-nav-spacer {
-    display: none !important;
-  }
-}
-
-/* Add bottom padding on mobile so content clears the nav */
-@media (max-width: 768px) {
-  body {
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-  }
-}
-
 /* ── Mobile card layout ─────────────────────────────────────────────────── */
 @media (max-width: 768px) {
   .library-page {
@@ -69,6 +52,7 @@
   .library-card-desc {
     font-size: 0.8125rem;
     color: #6b7280;
+    margin-top: 0.15rem;
   }
 
   .library-card-actions {

@@ -6,7 +6,6 @@ import AttemptPage from './pages/AttemptPage';
 import ReferencePage from './pages/ReferencePage';
 import ReferencePracticePage from './pages/ReferencePracticePage';
 import BehaviouralPage from './pages/BehaviouralPage';
-import BottomNav from './components/BottomNav';
 import './index.css';
 
 export default function App() {
@@ -20,7 +19,6 @@ export default function App() {
           <Route path="/reference-practice/:refId" element={<ReferencePracticePage />} />
           <Route path="/behavioural/:sectionId" element={<BehaviouralPage />} />
         </Routes>
-        <BottomNav />
       </BrowserRouter>
     </Provider>
   );
