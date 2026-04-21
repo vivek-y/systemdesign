@@ -14,3 +14,74 @@
     padding-bottom: env(safe-area-inset-bottom, 0px);
   }
 }
+
+/* ── Mobile card layout ─────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .library-page {
+    padding: 1rem !important;
+  }
+
+  .library-table {
+    display: none;
+  }
+
+  .library-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .library-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.875rem 1rem;
+    border-bottom: 1px solid #f3f4f6;
+    background: #ffffff;
+    gap: 0.75rem;
+  }
+
+  .library-card:last-child {
+    border-bottom: none;
+  }
+
+  .library-card-left {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .library-card-name {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: #111827;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .library-card-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.2rem;
+  }
+
+  .library-card-desc {
+    font-size: 0.8125rem;
+    color: #6b7280;
+  }
+
+  .library-card-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-shrink: 0;
+  }
+}
+
+/* ── Desktop: hide card layout ──────────────────────────────────────────── */
+@media (min-width: 769px) {
+  .library-cards {
+    display: none;
+  }
+}
