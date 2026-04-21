@@ -5,7 +5,6 @@ import { fetchIndex } from '../store/contentSlice';
 import { clearProgress, hydrateProgress } from '../store/progressSlice';
 import { loadAllProgressFromStorage } from '../store/localStorageMiddleware';
 import type { Difficulty } from '../types/design';
-import PdfModal from '../components/PdfModal';
 
 // ── Difficulty badge ───────────────────────────────────────────────────────
 
@@ -23,19 +22,24 @@ function DifficultyBadge({ level }: { level: Difficulty }) {
   );
 }
 
-// ── PDF icon button ────────────────────────────────────────────────────────
+// ── PDF icon link ──────────────────────────────────────────────────────────
 
-function WriteupBtn({ onOpen }: { onOpen: () => void }) {
+function WriteupBtn({ url }: { url: string }) {
   return (
-    <button onClick={onOpen} title="Open PDF"
-      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#0d9488', display: 'inline-flex', alignItems: 'center', padding: 0 }}>
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      title="Open PDF"
+      style={{ color: '#0d9488', display: 'inline-flex', alignItems: 'center' }}
+    >
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
         <polyline points="14 2 14 8 20 8" />
         <line x1="9" y1="13" x2="15" y2="13" />
         <line x1="9" y1="17" x2="13" y2="17" />
       </svg>
-    </button>
+    </a>
   );
 }
 
@@ -76,13 +80,13 @@ function Accordion({ title, count, defaultOpen = true, children }: {
 
 // ── Shared action buttons ──────────────────────────────────────────────────
 
-function ActionBtns({ label, onStart, onReset, onOpenPdf }: {
-  label: string; onStart: () => void; onReset?: () => void; onOpenPdf?: () => void;
+function ActionBtns({ label, onStart, onReset, pdfUrl }: {
+  label: string; onStart: () => void; onReset?: () => void; pdfUrl?: string;
 }) {
   const btn: React.CSSProperties = { border: 'none', borderRadius: '6px', padding: '0.375rem 0.875rem', fontSize: '0.8125rem', cursor: 'pointer', fontWeight: 600 };
   return (
     <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-      {onOpenPdf && <WriteupBtn onOpen={onOpenPdf} />}
+      {pdfUrl && <WriteupBtn url={pdfUrl} />}
       <button onClick={onStart} style={{ ...btn, backgroundColor: '#0d9488', color: '#ffffff' }}>{label}</button>
       {onReset && <button onClick={onReset} style={{ ...btn, backgroundColor: '#ffffff', color: '#6b7280', border: '1px solid #d1d5db' }}>↺</button>}
     </div>
@@ -92,9 +96,9 @@ function ActionBtns({ label, onStart, onReset, onOpenPdf }: {
 // ── Design section ─────────────────────────────────────────────────────────
 
 interface DesignItem {
-  id: string; name: string; difficulty: Difficulty; pdfFile?: string;
+  id: string; name: string; difficulty: Difficulty; pdfUrl?: string;
   hasProgress: boolean; isCompleted: boolean;
-  onStart: () => void; onStartOver: () => void; onOpenPdf?: () => void;
+  onStart: () => void; onStartOver: () => void;
 }
 
 function DesignSection({ items }: { items: DesignItem[] }) {
@@ -121,7 +125,7 @@ function DesignSection({ items }: { items: DesignItem[] }) {
                 </td>
                 <td style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #f3f4f6' }}><DifficultyBadge level={item.difficulty} /></td>
                 <td style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #f3f4f6' }}>
-                  {item.onOpenPdf ? <WriteupBtn onOpen={item.onOpenPdf} /> : <span style={{ color: '#d1d5db' }}>—</span>}
+                  {item.pdfUrl ? <WriteupBtn url={item.pdfUrl} /> : <span style={{ color: '#d1d5db' }}>—</span>}
                 </td>
                 <td style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #f3f4f6' }}>
                   <div style={{ display: 'flex', gap: '0.5rem' }}>
@@ -155,7 +159,7 @@ function DesignSection({ items }: { items: DesignItem[] }) {
                 label={item.hasProgress && !item.isCompleted ? 'Resume' : 'Start'}
                 onStart={item.onStart}
                 onReset={item.hasProgress ? item.onStartOver : undefined}
-                onOpenPdf={item.onOpenPdf}
+                pdfUrl={item.pdfUrl}
               />
             </div>
           </div>
@@ -169,7 +173,7 @@ function DesignSection({ items }: { items: DesignItem[] }) {
 
 interface SimpleItem {
   id: string; name: string; description: string;
-  onNavigate: () => void; onOpenPdf: () => void;
+  onNavigate: () => void; pdfUrl: string;
 }
 
 function SimpleSection({ items }: { items: SimpleItem[] }) {
@@ -194,7 +198,7 @@ function SimpleSection({ items }: { items: SimpleItem[] }) {
                     <div style={{ fontSize: '0.9375rem', fontWeight: 600, color: '#111827' }}>{item.name}</div>
                     <div style={{ fontSize: '0.8125rem', color: '#6b7280', marginTop: '0.125rem' }}>{item.description}</div>
                   </td>
-                  <td style={{ padding: '0.75rem 1rem', borderBottom: border, width: '100px' }}><WriteupBtn onOpen={item.onOpenPdf} /></td>
+                  <td style={{ padding: '0.75rem 1rem', borderBottom: border, width: '100px' }}><WriteupBtn url={item.pdfUrl} /></td>
                   <td style={{ padding: '0.75rem 1rem', borderBottom: border, width: '180px' }}><button onClick={item.onNavigate} style={btn}>Start</button></td>
                 </tr>
               );
@@ -212,7 +216,7 @@ function SimpleSection({ items }: { items: SimpleItem[] }) {
               <div className="library-card-desc">{item.description}</div>
             </div>
             <div className="library-card-actions">
-              <WriteupBtn onOpen={item.onOpenPdf} />
+              <WriteupBtn url={item.pdfUrl} />
               <button onClick={item.onNavigate} style={{ ...btn, padding: '0.375rem 0.75rem' }}>Start</button>
             </div>
           </div>
@@ -246,17 +250,6 @@ export default function LibraryPage() {
   const indexLoading = useAppSelector((state) => state.content.loading['__index__'] ?? false);
   const records = useAppSelector((state) => state.progress.records);
   const [refs, setRefs] = useState<RefSummary[]>([]);
-  const [modal, setModal] = useState<{ url: string; title: string } | null>(null);
-
-  const openPdf = (url: string, title: string) => {
-    // On mobile, open directly in browser — avoids iframe PDF issues on iOS
-    if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
-      window.open(url, '_blank', 'noopener,noreferrer');
-    } else {
-      setModal({ url, title });
-    }
-  };
-  const closePdf = () => setModal(null);
 
   useEffect(() => {
     dispatch(fetchIndex());
@@ -283,44 +276,38 @@ export default function LibraryPage() {
       id: design.id,
       name: design.name,
       difficulty: design.difficulty ?? 'Medium',
-      pdfFile: design.pdfFile,
+      pdfUrl,
       hasProgress: progress !== null,
       isCompleted: progress?.completed ?? false,
       onStart: () => navigate(`/attempt/${design.id}`),
       onStartOver: () => { dispatch(clearProgress(design.id)); navigate(`/attempt/${design.id}`); },
-      onOpenPdf: pdfUrl ? () => openPdf(pdfUrl, design.name) : undefined,
     };
   });
 
-  const refItems: SimpleItem[] = refs.map((ref) => {
-    const pdfUrl = REF_PDF[ref.id] ? `${import.meta.env.BASE_URL}docs/reference/${REF_PDF[ref.id]}` : '';
-    return {
-      id: ref.id,
-      name: ref.name,
-      description: REF_DESC[ref.id] ?? '',
-      onNavigate: () => navigate(`/reference-practice/${ref.id}`),
-      onOpenPdf: () => pdfUrl && openPdf(pdfUrl, ref.name),
-    };
-  });
+  const refItems: SimpleItem[] = refs.map((ref) => ({
+    id: ref.id,
+    name: ref.name,
+    description: REF_DESC[ref.id] ?? '',
+    onNavigate: () => navigate(`/reference-practice/${ref.id}`),
+    pdfUrl: REF_PDF[ref.id] ? `${import.meta.env.BASE_URL}docs/reference/${REF_PDF[ref.id]}` : '',
+  }));
 
   const behaviouralItems: SimpleItem[] = [
     {
       id: 'scenarios', name: 'Scenarios', description: 'Interview questions mapped to prepared answers',
       onNavigate: () => navigate('/behavioural/scenarios'),
-      onOpenPdf: () => openPdf(`${import.meta.env.BASE_URL}docs/behavioural/scenarios.pdf`, 'Scenarios'),
+      pdfUrl: `${import.meta.env.BASE_URL}docs/behavioural/scenarios.pdf`,
     },
     {
       id: 'stories', name: 'Stories', description: 'Personal leadership and engineering stories',
       onNavigate: () => navigate('/behavioural/stories'),
-      onOpenPdf: () => openPdf(`${import.meta.env.BASE_URL}docs/behavioural/stories.pdf`, 'Stories'),
+      pdfUrl: `${import.meta.env.BASE_URL}docs/behavioural/stories.pdf`,
     },
   ];
 
   return (
     <div className="library-page" style={{ padding: '2rem', maxWidth: '900px', margin: '0 auto' }}>
       <h1 style={{ marginBottom: '2rem', fontSize: '1.5rem', fontWeight: 700 }}>Interview Prep</h1>
-
-      {modal && <PdfModal url={modal.url} title={modal.title} onClose={closePdf} />}
 
       {refItems.length > 0 && (
         <Accordion title="Reference Docs" count={refItems.length}>
