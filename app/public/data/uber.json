@@ -1,0 +1,169 @@
+{
+  "id": "uber",
+  "name": "Uber",
+  "overview": "Uber is a ride-sharing platform that connects riders with drivers. The system must track driver locations in\nreal-time, match ride requests to nearby drivers, compute accurate ETAs, handle dynamic pricing (surge), and\nprocess payments. The system operates globally across hundreds of cities with different traffic patterns,\nregulations, and demand profiles. It must handle millions of concurrent rides and hundreds of thousands of\nactive drivers.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Real-time driver location tracking (every 4 seconds)",
+        "Match ride requests to nearest available driver within 30 seconds",
+        "Compute and display ETA before and during ride",
+        "Dynamic surge pricing based on supply/demand",
+        "Process payments on ride completion"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 5M concurrent rides, 500k active drivers globally",
+        "Driver location update latency <100ms end-to-end",
+        "Ride matching decision within 30 seconds, matching computation <500ms",
+        "99.99% availability — downtime directly loses revenue",
+        "Eventual consistency for driver locations; strong consistency for ride assignment (no double-booking)",
+        "Horizontally scalable: handle 10x traffic spikes during peak hours or events"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Trip",
+          "schema": "{\n  trip_id: UUID,\n\n  rider_id: string,\n  driver_id: string,\n  pickup: { lat, lng, address },\n  dropoff: { lat, lng, address },\n  status: enum(REQUESTED|MATCHED|DRIVER_EN_ROUTE|IN_PROGRESS|COMPLETED|CANCELLED),\n  fare: decimal,\n  surge_multiplier: float,\n  requested_at: timestamp,\n  completed_at: timestamp\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/trips",
+          "description": "Request ride",
+          "request": "{ rider_id, pickup, dropoff, vehicle_type }",
+          "response": "{ trip_id, status: 'REQUESTED', estimated_fare, surge_multiplier, eta_minutes }"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/trips/{trip_id}/status",
+          "description": "",
+          "request": "",
+          "response": "{ status, driver_location?, eta_minutes, fare_estimate }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Driver-Rider Matching",
+          "approaches": [
+            {
+              "title": "Nearest Driver (Simple)",
+              "description": "Find the geographically nearest available driver using Redis GEORADIUS. Doesn't consider driver heading, traffic, or driver rating. May match a driver who is technically close but will take 10 minutes due to traffic.",
+              "tradeoff": "Suboptimal matching; ignores traffic and driver direction.",
+              "isRecommended": false
+            },
+            {
+              "title": "ETA-Based Matching",
+              "description": "Compute ETA from each candidate driver to the pickup location. Match the driver with the lowest ETA. More accurate than distance-based matching. But computing ETA for 10 candidates requires 10 routing engine calls (~2 seconds).",
+              "tradeoff": "ETA computation for all candidates adds latency; routing engine load.",
+              "isRecommended": false
+            },
+            {
+              "title": "Two-Phase: Geo Filter + ETA Scoring",
+              "description": "Phase 1: Redis GEORADIUS to find top 10 candidates (fast, <5ms). Phase 2: Parallel ETA computation for all 10 candidates (~200ms). Match driver with lowest ETA. Driver assignment uses Redis distributed lock to prevent double-booking. If no driver found in 30 seconds, expand radius by 50% and retry.",
+              "tradeoff": "Parallel ETA computation adds complexity; Redis lock contention under high load.",
+              "isRecommended": true
+            }
+          ]
+        },
+        {
+          "subTopic": "Fare Calculation",
+          "approaches": [
+            {
+              "title": "Fixed Per-Mile Rate",
+              "description": "Fare = base_fare + per_mile_rate × distance. Doesn't account for traffic (same fare for 10-minute vs. 30-minute trip of same distance). Unfair to drivers stuck in traffic.",
+              "tradeoff": "Unfair to drivers in traffic; doesn't reflect actual trip cost.",
+              "isRecommended": false
+            },
+            {
+              "title": "Time + Distance + Surge",
+              "description": "Fare = base_fare + per_minute_rate × duration + per_mile_rate × distance + booking_fee, all multiplied by surge_multiplier. Accounts for both time and distance. Surge multiplier reflects supply/demand imbalance. Fare is estimated at request time (using ETA) and finalized at trip completion (using actual duration and distance).",
+              "tradeoff": "Fare estimate may differ significantly from actual fare if traffic is worse than predicted.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Trip Service",
+            "responsibility": "Manages trip lifecycle; validates requests; orchestrates matching"
+          },
+          {
+            "name": "Driver Location Service",
+            "responsibility": "Ingests driver GPS updates; maintains Redis Geo index"
+          },
+          {
+            "name": "Matching Service",
+            "responsibility": "Finds candidate drivers; computes ETAs; assigns with distributed lock"
+          },
+          {
+            "name": "ETA Service",
+            "responsibility": "Computes driver-to-pickup and pickup-to-dropoff ETAs using OSRM"
+          },
+          {
+            "name": "Surge Pricing Service",
+            "responsibility": "Computes surge multipliers per geohash zone every 60 seconds"
+          },
+          {
+            "name": "Payment Service",
+            "responsibility": "Processes fare payment on trip completion; handles refunds"
+          },
+          {
+            "name": "Notification Service",
+            "responsibility": "Sends push notifications to driver (new trip) and rider (driver matched)"
+          },
+          {
+            "name": "Tracking Service",
+            "responsibility": "Streams driver location to rider during active trip via WebSocket"
+          },
+          {
+            "name": "Trip DB (PostgreSQL)",
+            "responsibility": "Stores trip records; ACID transactions for fare processing"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Driver Location at Scale",
+          "content": "500k drivers × 1 update/4s = 125k writes/sec. The Driver Location Service uses a UDP-based protocol for\nlocation updates (lower overhead than HTTP). Updates are batched in 100ms windows before writing to Redis\nGeo. The Redis Geo index is sharded by geohash prefix across 20 nodes. Each node handles ~6,250\nwrites/sec — well within Redis's capacity."
+        },
+        {
+          "title": "3. Trip State Machine",
+          "content": "Each trip goes through a well-defined state machine: REQUESTED → MATCHED → DRIVER_EN_ROUTE →\nIN_PROGRESS → COMPLETED (or CANCELLED at any point). State transitions are atomic (PostgreSQL\ntransactions). Invalid transitions are rejected. The state machine ensures consistency: a trip cannot go from\nREQUESTED to IN_PROGRESS without being MATCHED first."
+        },
+        {
+          "title": "4. Cancellation Handling",
+          "content": "Riders can cancel before the driver arrives. Drivers can cancel before pickup. Cancellation policies: (1) Rider\ncancels after driver is en route for >2 minutes: cancellation fee charged, (2) Driver cancels: driver is penalized\nin matching score, rider is re-matched with priority. Cancellation events are published to Kafka for analytics and\ndriver behavior monitoring."
+        },
+        {
+          "title": "5. Fraud Detection",
+          "content": "GPS spoofing (drivers faking their location) is a significant fraud vector. The system detects GPS spoofing by:\n(1) Checking if the driver's reported speed is physically possible (>200 km/h is suspicious), (2) Comparing GPS\ncoordinates against the road network (driver shouldn't be in the middle of a lake), (3) Detecting sudden location\njumps (teleportation). Suspicious drivers are flagged for review."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Uber — System Design\nTrack · Match · Route · Pay\nRider\nmobile app\nDriver\nmobile app\nTrip API\nDriver Loc Svc\nKafka\nevents\nMatching Svc\n2-phase match\nETA Service\nOSRM routing\nRedis Geo\ndriver positions\nSurge Pricing\n60s compute\nPayment Svc\nfare processing\nPOST /trips\nGPS update\nGEOADD\nloc event\ntrip event\nconsume trip\n GEORADIUS\ncalc ETA\nget surge\ntrip complete",
+      "keyFlows": [
+        "① Driver sends GPS every 4s → Driver Loc Svc → Redis Geo (GEOADD)",
+        "② Rider requests trip → Kafka → Matching Svc",
+        "③ Matching: GEORADIUS → top 10 → parallel ETA → assign (Redis lock)",
+        "④ Surge Pricing computes multiplier every 60s per geohash zone",
+        "⑤ Trip complete → Kafka → Payment Svc processes fare"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study Uber's H3 geospatial indexing library: how it divides the world into hexagonal cells at\nmultiple resolutions, and why hexagons are better than squares for proximity queries.\n\nExpert Note: Learn about the two-sided marketplace dynamics: how Uber balances driver and rider\nsupply/demand, the role of surge pricing in incentivizing driver supply, and the long-term effects on driver\nbehavior.\nExpert Note: Understand Uber's OSRM deployment: how they maintain a global road network graph, how\nthey incorporate real-time traffic data, and how they handle map updates.\nExpert Note: Study the CAP theorem implications for ride-sharing: why driver location uses eventual\nconsistency (availability over consistency) while trip assignment uses strong consistency.\nExpert Note: Learn about GPS spoofing detection: how to use accelerometer and gyroscope data to\nvalidate GPS readings, and how machine learning models detect anomalous location patterns."
+    }
+  }
+}

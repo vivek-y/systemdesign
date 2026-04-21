@@ -1,0 +1,153 @@
+{
+  "id": "lyft-eta",
+  "name": "Lyft ETA",
+  "overview": "The ETA (Estimated Time of Arrival) service computes how long it will take a driver to reach a pickup location,\nand how long the total trip will take. ETAs must be accurate (within 2 minutes), computed in <200ms, and\nupdated continuously as the driver moves and traffic conditions change. The service must handle millions of\nETA requests per minute across all active rides and driver-matching operations.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Compute driver-to-pickup ETA in <200ms",
+        "Compute pickup-to-dropoff trip duration",
+        "Update ETA every 30 seconds during active ride",
+        "Incorporate real-time traffic data",
+        "Accuracy: within 2 minutes for 90% of trips"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 10M ETA requests/minute",
+        "ETA computation latency <200ms p99",
+        "ETA accuracy: within 2 minutes for 90% of trips",
+        "Traffic layer updated every 60 seconds from live driver GPS traces",
+        "Cache hit rate >60% for driver-to-pickup ETAs to reduce routing engine load",
+        "Graceful degradation: fall back to historical averages when real-time traffic data is unavailable"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "ETARequest",
+          "schema": "{\n  request_id: UUID,\n  origin: { lat, lng },\n  destination: { lat, lng },\n  departure_time: ISO8601,\n  vehicle_type: enum(STANDARD|XL|LUX)\n}"
+        },
+        {
+          "name": "ETAResponse",
+          "schema": "{\n  request_id: UUID,\n  duration_seconds: int,\n\n  distance_meters: int,\n  route_polyline: string,  // encoded polyline\n  traffic_condition: enum(FREE|MODERATE|HEAVY),\n  computed_at: ISO8601\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/eta",
+          "description": "",
+          "request": "{ origin, destination, departure_time? }",
+          "response": "{ duration_seconds, distance_meters, traffic_condition }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Routing Engine",
+          "approaches": [
+            {
+              "title": "Straight-Line Distance",
+              "description": "Estimate ETA using straight-line (Haversine) distance divided by average speed. Ignores road network, traffic, and turns. Accuracy is poor in urban areas with complex road networks.",
+              "tradeoff": "Poor accuracy; ignores real road conditions.",
+              "isRecommended": false
+            },
+            {
+              "title": "Third-Party Routing API (Google Maps)",
+              "description": "Use Google Maps Distance Matrix API for all ETA calculations. Accurate but expensive ($5/1000 requests). At 10M requests/minute = $50k/minute. Also creates vendor dependency.",
+              "tradeoff": "Prohibitively expensive at scale; vendor lock-in.",
+              "isRecommended": false
+            },
+            {
+              "title": "Custom Routing Engine (OSRM + Traffic Layer)",
+              "description": "Run OSRM (Open Source Routing Machine) with a pre-loaded road network graph. OSRM uses contraction hierarchies for sub-millisecond shortest-path queries. A traffic layer overlays real-time speed data (from driver GPS traces) onto the road network, adjusting edge weights for current conditions. Results are cached by (origin_geohash, destination_geohash) with a 5-minute TTL.",
+              "tradeoff": "Requires maintaining road network data (OpenStreetMap updates); traffic layer adds",
+              "isRecommended": true
+            },
+            {
+              "title": "complexity.",
+              "description": "Traffic Data Integration Static Historical Traffic Use historical average speeds by time-of-day and day-of-week. Doesn't reflect real-time incidents (accidents, road closures). Accuracy degrades during unusual events.",
+              "tradeoff": "No real-time awareness; poor during incidents.",
+              "isRecommended": false
+            },
+            {
+              "title": "Real-Time Traffic from Driver GPS Traces",
+              "description": "Aggregate driver GPS traces (speed + location) to compute real-time road speeds. A stream processing job (Flink) computes average speed per road segment every 60 seconds. Road segment speeds are stored in Redis (key = segment_id, value = speed_kmh). OSRM queries Redis for current speeds when computing routes. Fallback to historical averages for road segments with insufficient driver coverage.",
+              "tradeoff": "Requires sufficient driver density for accurate coverage; 60-second update lag.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "ETA API",
+            "responsibility": "Receives ETA requests; checks cache; calls Routing Engine"
+          },
+          {
+            "name": "Routing Engine (OSRM)",
+            "responsibility": "Computes shortest path using contraction hierarchy; queries traffic layer"
+          },
+          {
+            "name": "Traffic Layer (Redis)",
+            "responsibility": "Stores real-time road segment speeds; updated every 60 seconds by"
+          },
+          {
+            "name": "Flink Traffic Processor",
+            "responsibility": "Consumes driver GPS traces from Kafka; computes per-segment speeds"
+          },
+          {
+            "name": "ETA Cache (Redis)",
+            "responsibility": "Caches ETA results by (origin_geohash, dest_geohash); TTL = 5 minutes"
+          },
+          {
+            "name": "Road Network DB",
+            "responsibility": "OpenStreetMap data preprocessed by OSRM; updated weekly"
+          },
+          {
+            "name": "ETA History (Cassandra)",
+            "responsibility": "Stores predicted vs. actual ETAs for model accuracy monitoring"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. ETA Caching Strategy",
+          "content": "ETA requests are cached by (origin_geohash_6, destination_geohash_6) — geohash precision 6 gives ~1.2km\ncells. Two requests with origins within 1.2km of each other and destinations within 1.2km of each other get the\nsame cached ETA. Cache hit rate is ~60% for driver-to-pickup ETAs (many drivers near the same pickup area).\nCache TTL is 5 minutes to balance freshness with hit rate."
+        },
+        {
+          "title": "3. ETA Accuracy Monitoring",
+          "content": "Every completed trip records the predicted ETA (at ride start) and actual duration. A monitoring job computes\nETA accuracy metrics (mean absolute error, 90th percentile error) per city, time-of-day, and traffic condition. If\naccuracy degrades below threshold, an alert is triggered and the traffic layer parameters are recalibrated."
+        },
+        {
+          "title": "4. Handling Traffic Incidents",
+          "content": "When a major incident occurs (accident, road closure), driver GPS traces immediately show reduced speeds on\naffected segments. The Flink traffic processor detects the speed drop within 60 seconds and updates the traffic\nlayer. OSRM re-routes around the incident on the next ETA request. For known incidents (from traffic APIs), the\nroad segment is marked as closed and OSRM avoids it entirely."
+        },
+        {
+          "title": "5. Multi-Stop ETA",
+          "content": "For driver-to-pickup-to-dropoff ETA, the routing engine computes two separate routes: driver→pickup and\npickup→dropoff. The total ETA is the sum of both durations plus an estimated pickup dwell time (30 seconds).\nFor pool rides with multiple pickups, the routing engine uses a nearest-neighbor heuristic to order stops and\ncomputes the total route duration."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Lyft ETA Service — System Design\nRoute · Traffic · Cache · Compute\nClient\nETA request\nETA API\nETA Cache\nRedis geohash\nOSRM Engine\ncontraction hier.\nTraffic Layer\nRedis seg speeds\nKafka\ndriver GPS traces\nFlink\ntraffic processor\nRoad Network\nOSM + CH index\nCassandra\nETA history\nPOST /eta\ncache check\ncache miss\nshortest path\nget seg speeds\nGPS traces\nupdate speeds\nlog ETA",
+      "keyFlows": [
+        "① Client requests ETA → ETA API → check Redis Cache (geohash key)",
+        "② Cache miss → OSRM Engine queries Road Network (contraction hierarchy)",
+        "③ OSRM queries Traffic Layer (Redis) for real-time road segment speeds",
+        "④ Driver GPS traces → Kafka → Flink → update Traffic Layer every 60s",
+        "⑤ ETA result cached in Redis (5min TTL) + logged to Cassandra for accuracy"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study contraction hierarchies in depth: the node ordering heuristic, the shortcut addition\nalgorithm, and how bidirectional Dijkstra exploits the hierarchy for fast queries.\nExpert Note: Learn about OpenStreetMap data formats: the OSM XML/PBF format, how ways and nodes\nrepresent road segments, and how OSRM preprocesses OSM data.\nExpert Note: Understand map-matching algorithms: how to snap noisy GPS traces to the road network\nusing Hidden Markov Models, which is essential for accurate traffic speed computation.\nExpert Note: Study the A* algorithm and its relationship to Dijkstra: how the heuristic function guides the\nsearch, and why contraction hierarchies outperform A* for road network routing.\nExpert Note: Learn about geohash-based caching for spatial queries: how to choose the right precision\nlevel for cache keys, and how to handle cache invalidation when traffic conditions change rapidly.\n\nLyft ETA Service"
+    }
+  }
+}

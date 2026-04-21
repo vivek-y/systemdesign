@@ -1,0 +1,180 @@
+{
+  "id": "fb-news-feed",
+  "name": "FB News Feed",
+  "overview": "Facebook News Feed aggregates posts from a user's friends and followed pages, ranks them by relevance,\nand displays them in a personalized feed. The system must handle 500M daily active users, each with up to\n5,000 friends, and serve feed reads with <200ms latency. The ranking algorithm considers recency,\nengagement signals, and user preferences. The system must handle celebrity accounts (millions of followers)\ndifferently from regular users to avoid fan-out storms.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Generate personalized feed for each user",
+        "Include posts from friends, followed pages, and groups",
+        "Rank posts by relevance (recency + engagement)",
+        "Serve feed with <200ms p99 latency",
+        "Support pagination (infinite scroll)",
+        "Handle celebrity accounts (>1M followers)"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 500M DAU; each user may have up to 5,000 friends",
+        "Feed read latency <200ms p99",
+        "99.99% availability — feed downtime is immediately visible to hundreds of millions of users",
+        "Eventual consistency: slight feed staleness (seconds) is acceptable over unavailability",
+        "Fan-out must handle celebrity accounts (millions of followers) without causing write storms",
+        "Horizontally scalable feed cache; handle 10x traffic spikes during breaking news events"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Post",
+          "schema": "{\n  post_id: UUID,\n  author_id: string,\n  content: string,\n  media_urls: [string],\n  created_at: timestamp,\n  like_count: int,\n  comment_count: int,\n  share_count: int\n}"
+        },
+        {
+          "name": "FeedItem",
+          "schema": "{\n  user_id: string,\n  post_id: UUID,\n  score: float,\n  inserted_at: timestamp\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/v1/feed",
+          "description": "",
+          "request": "",
+          "response": "{ posts: [{ post_id, author, content, media, like_count, ... }],\n    next_cursor, has_more }"
+        },
+        {
+          "method": "POST",
+          "path": "/v1/posts",
+          "description": "",
+          "request": "{ author_id, content, media_urls? }",
+          "response": "{ post_id, created_at }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Feed Generation Strategy",
+          "approaches": [
+            {
+              "title": "Pull (Fan-out on Read)",
+              "description": "When a user requests their feed, query all their friends' posts, merge, sort by score, and return top N. For a user with 5,000 friends, this requires 5,000 DB queries or a massive JOIN. At 500M DAU, this is computationally prohibitive.",
+              "tradeoff": "Too slow for users with many friends; high read amplification.",
+              "isRecommended": false
+            },
+            {
+              "title": "Push (Fan-out on Write)",
+              "description": "When a user posts, immediately write the post to the feed of all their followers. Fast reads (pre-computed feed). But for a celebrity with 10M followers, one post triggers 10M writes — a fan-out storm that can take minutes.",
+              "tradeoff": "Fan-out storm for celebrity accounts; wasted writes for inactive users.",
+              "isRecommended": false
+            },
+            {
+              "title": "Hybrid: Push for Regular Users, Pull for Celebrities",
+              "description": "Regular users (<10k followers): fan-out on write. Post is pushed to all followers' feed caches immediately. Celebrity users (>10k followers): fan-out on read. Celebrity posts are fetched and merged at read time. Feed cache stores pre-ranked post_ids per user. At read time, post details are fetched from a post cache (Redis). Celebrity posts are injected during the merge step.",
+              "tradeoff": "More complex logic; celebrity threshold requires tuning; merge step adds latency.",
+              "isRecommended": true
+            }
+          ]
+        },
+        {
+          "subTopic": "Feed Ranking",
+          "approaches": [
+            {
+              "title": "Chronological Sort",
+              "description": "Sort posts by created_at descending. Simple and predictable. Users miss important posts from friends who post infrequently. Engagement signals are ignored.",
+              "tradeoff": "Poor user experience; high-volume posters dominate the feed.",
+              "isRecommended": false
+            },
+            {
+              "title": "Simple Engagement Score",
+              "description": "Score = recency_weight × (1/age_hours) + engagement_weight × (likes + comments × 2 + shares × 3). Better than chronological but doesn't personalize per user. A post with 1000 likes is ranked the same for all users regardless of their relationship with the author.",
+              "tradeoff": "No personalization; engagement farming can game the score.",
+              "isRecommended": false
+            },
+            {
+              "title": "ML Ranking with Feature Store",
+              "description": "A lightweight ML model (gradient boosted trees) scores each candidate post using features: author_affinity (how often user interacts with author), post_engagement_rate, content_type_preference, recency. Features are pre-computed and stored in a Feature Store (Redis). The ranking model runs in <10ms per post. Model is retrained daily on engagement data. A/B testing framework evaluates ranking changes.",
+              "tradeoff": "ML model adds complexity; feature store requires maintenance; model can amplify biases.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Post Service",
+            "responsibility": "Accepts new posts; triggers fan-out for regular users; writes to Post DB"
+          },
+          {
+            "name": "Fan-out Service",
+            "responsibility": "Consumes post events from Kafka; writes post_id to followers' feed caches in Redis"
+          },
+          {
+            "name": "Feed Service",
+            "responsibility": "Serves feed requests; reads from Redis feed cache; merges celebrity posts; ranks with ML model"
+          },
+          {
+            "name": "Redis Feed Cache",
+            "responsibility": "Stores pre-ranked post_id lists per user (max 1000 items); TTL = 7 days"
+          },
+          {
+            "name": "Post Cache (Redis)",
+            "responsibility": "Caches post details (content, media, counts) for fast hydration"
+          },
+          {
+            "name": "Feature Store (Redis)",
+            "responsibility": "Stores pre-computed ranking features per (user, post) pair"
+          },
+          {
+            "name": "Ranking Service",
+            "responsibility": "Applies ML model to score candidate posts; returns ranked list"
+          },
+          {
+            "name": "Post DB (MySQL)",
+            "responsibility": "Durable store for all posts; sharded by author_id"
+          },
+          {
+            "name": "Social Graph DB (TAO)",
+            "responsibility": "Stores friend/follow relationships; used for fan-out target list"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Feed Cache Eviction",
+          "content": "The feed cache stores up to 1000 post_ids per user. When the cache is full, the oldest (lowest-scored) post_ids\nare evicted. For inactive users (no login in 7 days), the feed cache is not maintained — their feed is generated\non-demand at login time by querying the Post DB directly. This avoids wasting Redis memory on inactive users."
+        },
+        {
+          "title": "3. Handling Deleted Posts",
+          "content": "When a post is deleted, it must be removed from all feed caches. For regular users, the fan-out service sends\ndelete events to all followers' caches. For celebrity posts (not in feed caches), the Feed Service checks post\nstatus at read time and filters deleted posts. A post_id blocklist in Redis provides O(1) lookup for deleted posts\nduring feed hydration."
+        },
+        {
+          "title": "4. Pagination with Cursors",
+          "content": "Feed pagination uses cursor-based pagination (not offset-based) to handle the dynamic nature of feeds. The\ncursor encodes the last seen post_id and score. On the next request, the Feed Service returns posts with score\n< cursor_score (or same score but post_id < cursor_post_id). This ensures consistent pagination even as new\n\nposts are inserted at the top of the feed."
+        },
+        {
+          "title": "5. Real-Time Feed Updates",
+          "content": "When a friend posts, the user's feed should update without a page refresh. The Feed Service maintains a\nWebSocket connection per active user. When a new post is fan-out to a user's feed cache, a notification is\npushed via WebSocket. The client then fetches the new post and prepends it to the displayed feed. This gives\nthe 'X new posts' banner seen on Facebook."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Facebook News Feed — System Design\nPost · Fan-out · Rank · Serve\nUser\nbrowser/app\nPost Svc\nFeed Svc\nKafka\npost events\nFan-out Svc\nregular users\nFeed Service\nmerge + rank\nRedis Feed\npost_id lists\nPost Cache\npost details\nRanking Svc\nML model\nSocial Graph\nTAO / friends\nPOST /posts\nGET /feed\npublish\nconsume\nget followers\nwrite feed cache\nread feed\nread post_ids\nhydrate posts\nrank candidates",
+      "keyFlows": [
+        "① User posts → Post Svc → Kafka → Fan-out Svc",
+        "② Fan-out: get followers from Social Graph → write post_id to Redis Feed Cache",
+        "③ Celebrity posts: NOT fanned out; merged at read time by Feed Service",
+        "④ GET /feed → Feed Svc → Redis Feed Cache → hydrate from Post Cache",
+        "⑤ Ranking Svc applies ML model (author affinity + engagement + recency)"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study Facebook's TAO (The Associations and Objects) system: how it stores the social graph\nas objects and associations, and how it handles the massive read load of social graph queries.\nExpert Note: Learn about the fan-out-on-write vs. fan-out-on-read trade-off in depth: the exact thresholds\nused by Twitter (celebrity threshold ~10k followers) and the hybrid approach.\nExpert Note: Understand gradient boosted trees (XGBoost/LightGBM) for ranking: how they handle sparse\nfeatures, the role of feature importance, and how to serve them at low latency.\nExpert Note: Study Redis cluster architecture: how hash slots are distributed, how resharding works, and\nhow to handle hot keys in a feed cache scenario.\nExpert Note: Learn about the EdgeRank algorithm (Facebook's original ranking) and how modern\nML-based ranking systems differ from it in terms of feature engineering and model complexity.\n\nFacebook News Feed"
+    }
+  }
+}

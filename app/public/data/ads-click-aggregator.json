@@ -1,0 +1,183 @@
+{
+  "id": "ads-click-aggregator",
+  "name": "Ads Click Aggregator",
+  "overview": "An ads click aggregator collects billions of raw click events from ad networks, deduplicates them, aggregates\ncounts per ad per time window, and exposes query APIs for billing and analytics dashboards. The system must\nhandle extreme write throughput (hundreds of thousands of events per second), guarantee exactly-once\ncounting to prevent billing fraud, and serve low-latency read queries over aggregated data. Late-arriving events\n(due to mobile offline scenarios) must be handled gracefully. The pipeline must be fault-tolerant, horizontally\nscalable, and auditable.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Ingest raw click events (ad_id, user_id, timestamp, metadata)",
+        "Deduplicate clicks within a configurable window (e.g., 1 hour)",
+        "Aggregate click counts per ad per minute/hour/day",
+        "Query aggregated counts by ad_id and time range",
+        "Support late-arriving events up to 24 hours",
+        "Expose billing-grade accurate counts"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Handle 500k clicks/sec ingestion with durable, fault-tolerant buffering",
+        "Exactly-once counting for billing-grade accuracy — undercounting or overcounting has financial impact",
+        "Aggregation query latency <100ms for dashboard range queries",
+        "Support late-arriving events up to 24 hours after event time",
+        "Horizontally scalable: add partitions/workers without downtime",
+        "Immutable raw event archive for audit and reprocessing"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Click Event",
+          "schema": "{\n  event_id: UUID,       // idempotency key\n  ad_id: string,\n  user_id: string,\n\n  session_id: string,\n  timestamp: ISO8601,   // client-side event time\n  ip: string,\n  user_agent: string,\n  metadata: map<string,string>\n}"
+        },
+        {
+          "name": "Aggregated Count",
+          "schema": "{\n  ad_id: string,\n  window_start: timestamp,\n  window_type: enum(MINUTE|HOUR|DAY),\n  click_count: int64,\n  unique_users: HyperLogLog,\n  last_updated: timestamp\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/clicks",
+          "description": "Ingest click event",
+          "request": "Body: { event_id, ad_id, user_id, timestamp, metadata }",
+          "response": "{ status: 'accepted', event_id }"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/clicks/aggregate",
+          "description": "",
+          "request": "",
+          "response": "{\n    ad_id: string,\n    windows: [\n      { window_start, window_end, click_count, unique_users },\n      ...\n    ]\n  }"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/clicks/raw",
+          "description": "Audit log",
+          "request": "",
+          "response": "{ events: [...], next_page_token }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Ingestion Layer",
+          "approaches": [
+            {
+              "title": "Synchronous DB Writes",
+              "description": "Write each click directly to a relational database on the hot path. Simple to implement but the DB becomes a bottleneck at scale. A single MySQL instance handles ~5k writes/sec; at 500k clicks/sec this fails immediately. No buffering means any downstream slowness causes client timeouts.",
+              "tradeoff": "DB cannot sustain write throughput; single point of failure.",
+              "isRecommended": false
+            },
+            {
+              "title": "Kafka + Stream Processor",
+              "description": "Clients write to a Kafka topic partitioned by ad_id. A Flink/Spark Streaming job reads, deduplicates using a Redis Bloom filter, and writes aggregates to a time-series store. Kafka provides durable buffering and replay. Partitioning by ad_id ensures ordered processing per ad. Flink's event-time windows handle late arrivals via watermarks.",
+              "tradeoff": "Operational complexity of Kafka + Flink cluster; requires expertise.",
+              "isRecommended": false
+            },
+            {
+              "title": "Kafka + Flink with Tiered Storage",
+              "description": "Same as above but Kafka is configured with tiered storage (S3 offload) for long-term replay. Flink uses RocksDB state backend for large dedup windows. Aggregates are written to Apache Druid (OLAP) for fast range queries and to Cassandra for per-ad time-series lookups. A separate Lambda/batch job reconciles any missed late events daily.",
+              "tradeoff": "Higher infra cost; Druid cluster management adds complexity.",
+              "isRecommended": true
+            }
+          ]
+        },
+        {
+          "subTopic": "Deduplication Strategy",
+          "approaches": [
+            {
+              "title": "Exact Dedup with Redis SET",
+              "description": "Store event_id in a Redis SET with TTL equal to the dedup window. Works for small windows but Redis memory grows linearly with unique events. At 500k events/sec × 3600s = 1.8B keys per hour — infeasible.",
+              "tradeoff": "Memory explosion at scale; Redis becomes bottleneck.",
+              "isRecommended": false
+            },
+            {
+              "title": "Bloom Filter per Time Bucket",
+              "description": "Use a Bloom filter (Redis BF module) per 1-hour bucket. False positive rate ~0.1% is acceptable for click counting. Memory: ~1.2 GB per hour bucket for 1B events at 0.1% FPR. Rotate buckets hourly.",
+              "tradeoff": "False positives cause slight undercounting; not suitable for billing-critical paths.",
+              "isRecommended": false
+            },
+            {
+              "title": "Flink Keyed State + Periodic Checkpoints",
+              "description": "Flink maintains a keyed state (HashSet of event_ids) per ad_id partition. State is checkpointed to S3 every 30 seconds. Exactly-once semantics via Flink's two-phase commit sink. Dedup window is configurable per ad campaign. For billing, a secondary exact-dedup pass runs on raw S3 data nightly.",
+              "tradeoff": "Flink state can grow large; requires careful state TTL configuration.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Click Ingest API",
+            "responsibility": "Stateless HTTP service; validates events, publishes to Kafka with event_id as key"
+          },
+          {
+            "name": "Kafka",
+            "responsibility": "Durable event log; partitioned by ad_id; tiered storage to S3 for replay"
+          },
+          {
+            "name": "Flink Aggregator",
+            "responsibility": "Consumes Kafka; deduplicates; computes tumbling/sliding windows; writes to Druid + Cassandra"
+          },
+          {
+            "name": "Redis",
+            "responsibility": "Bloom filter for fast dedup; hot aggregate cache for dashboard queries"
+          },
+          {
+            "name": "Apache Druid",
+            "responsibility": "OLAP store for ad-hoc range queries; pre-aggregated rollups"
+          },
+          {
+            "name": "Cassandra",
+            "responsibility": "Per-ad time-series store; partition key = ad_id; clustering key = window_start"
+          },
+          {
+            "name": "S3 Raw Store",
+            "responsibility": "Immutable raw event archive for audit and reprocessing"
+          },
+          {
+            "name": "Reconciliation Job",
+            "responsibility": "Nightly batch job re-aggregates from S3 to fix late arrivals and correct counts"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Handling Late-Arriving Events",
+          "content": "Mobile clients may buffer clicks offline and send them hours later. Flink's event-time processing with\nwatermarks handles this: the watermark advances based on the maximum observed event timestamp minus a\nconfigurable allowed lateness (e.g., 24 hours). Events within the allowed lateness window update existing\naggregates; events beyond the window are routed to a side output for manual review.\n// Flink watermark strategy\nWatermarkStrategy\n  .<ClickEvent>forBoundedOutOfOrderness(Duration.ofHours(24))\n  .withTimestampAssigner((e, ts) -> e.getTimestamp())"
+        },
+        {
+          "title": "3. Query Performance for Dashboards",
+          "content": "Ad dashboards query click counts for a given ad over arbitrary time ranges. Apache Druid pre-aggregates data\nat minute, hour, and day granularities using its segment architecture. Queries on Druid for a 30-day range over\na single ad_id complete in under 100ms because Druid scans only the relevant segments. For real-time data\n(last 5 minutes), the dashboard queries Redis directly where the Flink job writes running totals."
+        },
+        {
+          "title": "4. Partitioning Strategy",
+          "content": "Kafka topics are partitioned by ad_id using consistent hashing. This ensures all clicks for a given ad go to the\nsame partition, enabling stateful per-ad processing in Flink without cross-partition joins. Hot ads (viral\ncampaigns) can cause partition skew; we mitigate this by sub-partitioning hot ad_ids across multiple partitions\nand merging in a downstream aggregation step."
+        },
+        {
+          "title": "5. Scalability and Capacity Planning",
+          "content": "At 500k clicks/sec, Kafka needs ~50 partitions at 10k events/partition/sec. Each Flink task manager handles 5\npartitions, requiring 10 task managers. Cassandra is sized for 1TB/day of aggregated data with a 90-day\nretention, requiring a 90TB cluster with 3x replication = 270TB raw storage. Druid segments are compressed\n~10:1, so 30 days of data fits in ~3TB."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Ads Click Aggregator — System Design\nIngest · Deduplicate · Aggregate · Query\nAd SDK\nclick events\nIngest API\nKafka\npartitioned by ad_id\nFlink\nAggregator\nRedis\ndedup + cache\nDruid\nCassandra\ntime-series\nS3\nraw archive\nReconcile\nnightly batch\nQuery API\nDashboard\nad analytics\nPOST /clicks\npublish\nconsume\nwrite agg\nwrite OLAP\ndedup check\nraw events\nreprocess\nreconcile\nquery\nread agg\nOLAP query",
+      "keyFlows": [
+        "① Ad SDK → Ingest API → Kafka (partitioned by ad_id)",
+        "② Flink reads Kafka, deduplicates via Redis Bloom filter",
+        "③ Flink writes aggregates to Cassandra (time-series) + Druid (OLAP)",
+        "④ Raw events archived to S3; nightly Reconcile job corrects counts",
+        "⑤ Dashboard queries Query API → Cassandra (recent) or Druid (historical)"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study Apache Flink's exactly-once semantics: how two-phase commit works with Kafka\nsources and external sinks, and the role of checkpoints and savepoints in fault recovery.\n\nExpert Note: Understand Apache Druid's architecture: how segments are created, indexed, and queried;\nthe role of the coordinator, broker, historical, and middleManager nodes.\nExpert Note: Learn about HyperLogLog for approximate unique counting: why it uses only 12KB to\nestimate cardinality with 2% error, and how to merge HLL sketches across time windows.\nExpert Note: Study Kafka's tiered storage feature: how it offloads older segments to object storage (S3)\nwhile keeping recent data on local SSDs, enabling cost-effective long-term retention.\nExpert Note: Understand watermark strategies in stream processing: event time vs. processing time, how\nwatermarks propagate through a DAG, and the trade-off between latency and completeness."
+    }
+  }
+}

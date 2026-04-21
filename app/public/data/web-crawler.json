@@ -1,0 +1,172 @@
+{
+  "id": "web-crawler",
+  "name": "Web Crawler",
+  "overview": "A web crawler systematically browses the web, downloading and indexing web pages for a search engine. The\ncrawler must discover new pages by following links, avoid crawling the same page twice, respect robots.txt and\ncrawl delays, handle diverse content types, and scale to crawl billions of pages. The crawler must be polite (not\noverload web servers), fault-tolerant, and able to prioritize important pages.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Crawl 1 billion pages per month",
+        "Respect robots.txt and crawl delays",
+        "Avoid duplicate URL crawling",
+        "Extract and follow links from crawled pages",
+        "Store crawled content for indexing",
+        "Prioritize high-PageRank pages"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Crawl 1 billion pages per month (~385 pages/sec sustained)",
+        "Politeness: max 1 request/sec per domain; respect robots.txt crawl delays",
+        "URL deduplication must handle 1B+ URLs with <0.1% false positive rate",
+        "Fault tolerant: worker failures must not lose queued URLs or crawled content",
+        "Horizontally scalable: add crawler workers without coordination overhead",
+        "Crawl freshness: high-PageRank pages recrawled more frequently than low-priority pages"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "CrawlJob",
+          "schema": "{\n  url: string,\n  priority: float,  // PageRank estimate\n  depth: int,\n  discovered_from: string,  // parent URL\n  scheduled_at: timestamp,\n  last_crawled: timestamp,\n  crawl_delay: int  // from robots.txt\n}"
+        },
+        {
+          "name": "CrawledPage",
+          "schema": "{\n  url: string,\n\n  content_hash: SHA256,\n  html: string,\n  links: [string],\n  crawled_at: timestamp,\n  http_status: int,\n  content_type: string\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/seeds",
+          "description": "Add seed URLs",
+          "request": "{ urls: [string] }",
+          "response": "{ queued: int }"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/crawl/stats",
+          "description": "",
+          "request": "",
+          "response": "{ pages_crawled, pages_queued, pages_per_second, unique_domains }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "URL Frontier (Crawl Queue)",
+          "approaches": [
+            {
+              "title": "Simple FIFO Queue",
+              "description": "Store URLs in a FIFO queue. Crawl in order of discovery. No prioritization. Low-quality pages are crawled before high-quality ones. No politeness (multiple requests to same domain in rapid succession).",
+              "tradeoff": "No prioritization; no politeness; poor crawl quality.",
+              "isRecommended": false
+            },
+            {
+              "title": "Priority Queue per Domain",
+              "description": "Maintain a priority queue per domain. Crawl high-priority URLs first. Enforce crawl delay between requests to the same domain. Better quality and politeness. But managing millions of per-domain queues is complex.",
+              "tradeoff": "Complex queue management; memory-intensive for millions of domains.",
+              "isRecommended": false
+            },
+            {
+              "title": "Two-Level URL Frontier",
+              "description": "Front queues: multiple priority queues (HIGH/MEDIUM/LOW) based on PageRank estimate. Back queues: one queue per domain, enforcing crawl delay. A selector picks from front queues and routes to the appropriate back queue. Workers pull from back queues. If a domain's back queue is empty, the worker picks from another domain's queue. URL deduplication uses a distributed Bloom filter (Redis BF module).",
+              "tradeoff": "Complex two-level architecture; Bloom filter has false positives (slight re-crawling).",
+              "isRecommended": true
+            }
+          ]
+        },
+        {
+          "subTopic": "Duplicate Detection",
+          "approaches": [
+            {
+              "title": "Exact URL Match in DB",
+              "description": "Store all crawled URLs in a DB. Check before crawling. At 1B URLs, the DB becomes a bottleneck. Each URL check requires a DB query.",
+              "tradeoff": "DB bottleneck at 1B URLs; slow lookup.",
+              "isRecommended": false
+            },
+            {
+              "title": "Bloom Filter",
+              "description": "Use a Bloom filter to check if a URL has been crawled. False positive rate ~0.1%. O(1) lookup. Memory: ~1.2 GB for 1B URLs at 0.1% FPR. Distributed across Redis cluster. False positives cause ~0.1% of URLs to be skipped (acceptable).",
+              "tradeoff": "False positives cause slight under-crawling; Bloom filter cannot be shrunk.",
+              "isRecommended": false
+            },
+            {
+              "title": "Bloom Filter + Content Hash Dedup",
+              "description": "URL-level dedup: Bloom filter for fast URL lookup. Content-level dedup: SHA256 hash of page content. If content hash already seen, skip indexing (but still follow links). Content dedup catches mirror sites and syndicated content that have different URLs but identical content.",
+              "tradeoff": "Two-level dedup adds complexity; content hashing requires downloading the page first.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "URL Frontier",
+            "responsibility": "Two-level priority queue; front queues by priority; back queues by domain"
+          },
+          {
+            "name": "Crawler Workers",
+            "responsibility": "Fetch pages; extract links; publish to Kafka; respect robots.txt"
+          },
+          {
+            "name": "DNS Resolver",
+            "responsibility": "Caches DNS lookups per domain; reduces DNS query overhead"
+          },
+          {
+            "name": "Bloom Filter (Redis)",
+            "responsibility": "URL deduplication; distributed across Redis cluster"
+          },
+          {
+            "name": "Link Extractor",
+            "responsibility": "Parses HTML; extracts links; normalizes URLs; publishes to URL Frontier"
+          },
+          {
+            "name": "Indexer",
+            "responsibility": "Processes crawled content; builds inverted index for search"
+          },
+          {
+            "name": "PageRank Calculator",
+            "responsibility": "Batch job computing PageRank from link graph; updates URL priorities"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. URL Normalization",
+          "content": "URLs must be normalized before deduplication to avoid crawling the same page multiple times with different\nURL representations. Normalization steps: (1) Lowercase scheme and host, (2) Remove default ports (80 for\nHTTP, 443 for HTTPS), (3) Remove URL fragments (#section), (4) Sort query parameters alphabetically, (5)\nRemove tracking parameters (utm_source, fbclid, etc.), (6) Resolve relative URLs to absolute."
+        },
+        {
+          "title": "3. Handling Redirects",
+          "content": "HTTP 301/302 redirects are followed up to 5 hops. The final URL after redirects is stored in the Bloom filter. If\nthe redirect chain leads to an already-crawled URL, the crawl is skipped. Redirect chains are stored to detect\nredirect loops (A → B → A). Circular redirects are detected and the URL is marked as an error."
+        },
+        {
+          "title": "4. Distributed Crawling",
+          "content": "The crawler is distributed across 1000 worker nodes. URL assignment uses consistent hashing by domain: all\nURLs from the same domain go to the same worker node. This ensures crawl delay enforcement is local (no\ncoordination needed between workers for the same domain). Workers are stateless — they pull from the URL\nFrontier and push results to Kafka."
+        },
+        {
+          "title": "5. Recrawling Strategy",
+          "content": "Pages must be recrawled periodically to detect updates. Recrawl frequency is based on: (1) Page change\nfrequency (estimated from previous crawls), (2) Page importance (PageRank), (3) Content type (news pages\nrecrawled hourly, static pages monthly). The URL Frontier stores the next_crawl_time for each URL and\nre-queues it when the time arrives."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Web Crawler — System Design\nDiscover · Fetch · Extract · Index\nWeb\ntarget pages\nCrawlers\n1000 workers\nURL Frontier\n2-level priority Q\nBloom Filter\nURL dedup\nKafka\ncrawled pages\nLink Extractor\nparse + normalize\nS3\nraw HTML\nIndexer\ninverted index\nPageRank\nbatch job\nHTTP GET\ndispatch URL\npublish page\ndedup check\nextract links\nstore HTML\nnew URLs\nindex content\nlink graph\nupdate priority",
+      "keyFlows": [
+        "① URL Frontier dispatches URL to Crawler (consistent hash by domain)",
+        "② Crawler: check Bloom filter → fetch page → publish to Kafka",
+        "③ Link Extractor: parse HTML → normalize URLs → add to URL Frontier",
+        "④ Raw HTML stored in S3 → Indexer builds inverted index",
+        "⑤ PageRank batch job updates URL priorities in URL Frontier"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study the Mercator web crawler architecture: the two-level URL frontier design, how it\nbalances politeness with crawl throughput, and how it handles the scale of the web.\nExpert Note: Learn about PageRank: the original Google algorithm, how it models the web as a Markov\nchain, and how it's computed iteratively using the power method.\nExpert Note: Understand robots.txt: the Robots Exclusion Protocol, how to parse and cache robots.txt files,\nand the legal implications of ignoring robots.txt.\nExpert Note: Study consistent hashing for URL assignment: how to distribute URLs across crawler nodes\nby domain hash, and how to handle node failures without re-crawling.\nExpert Note: Learn about web content deduplication: SimHash for near-duplicate detection, how to handle\nmirror sites and content syndication, and the trade-off between dedup accuracy and crawl coverage."
+    }
+  }
+}

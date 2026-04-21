@@ -1,0 +1,152 @@
+{
+  "id": "lyft-surge-pricing",
+  "name": "Lyft Surge Pricing",
+  "overview": "Surge pricing dynamically increases ride prices in areas where demand exceeds supply. The system must\ncontinuously monitor supply (available drivers) and demand (ride requests) per geographic zone, compute\nsurge multipliers in near-real-time, display surge zones to riders before they request a ride, and ensure pricing\nis consistent throughout a ride (price locked at request time). The system must be fair, transparent, and\nresistant to gaming.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Compute surge multiplier per geographic zone every 60 seconds",
+        "Display surge zones on rider map before requesting",
+        "Lock price at ride request time (no mid-ride price changes)",
+        "Surge multiplier range: 1.0x to 5.0x",
+        "Surge computation latency <5 seconds"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 500k active drivers and 2M riders across all surge zones",
+        "Surge multipliers recomputed every 60 seconds with <5 second end-to-end latency",
+        "Price locked at ride request time — multiplier must never change mid-ride",
+        "99.9% availability; stale surge data (up to 120s TTL) is preferable to unavailability",
+        "Surge zone updates pushed to riders in real-time via WebSocket on multiplier change",
+        "Surge history logged for regulatory audits and gaming detection"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "SurgeZone",
+          "schema": "{\n  zone_id: string,  // geohash cell\n  geohash: string,\n  multiplier: float,  // 1.0 to 5.0\n\n  demand_count: int,  // ride requests in last 5 min\n  supply_count: int,  // available drivers\n  computed_at: timestamp\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/v1/surge/zones",
+          "description": "",
+          "request": "",
+          "response": "{ zones: [{ geohash, multiplier, center_lat, center_lng }] }"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/surge/estimate",
+          "description": "",
+          "request": "",
+          "response": "{ multiplier, base_fare, estimated_fare, surge_active: bool }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Surge Computation",
+          "approaches": [
+            {
+              "title": "Fixed Surge Thresholds",
+              "description": "Apply surge when demand/supply ratio exceeds fixed thresholds (e.g., >2x demand = 1.5x surge). Simple but doesn't adapt to local conditions. A 2:1 ratio in a dense city is different from a rural area.",
+              "tradeoff": "Not adaptive; same thresholds for all zones regardless of baseline conditions.",
+              "isRecommended": false
+            },
+            {
+              "title": "Demand/Supply Ratio",
+              "description": "Surge multiplier = f(demand_count / supply_count) where f is a piecewise linear function. More adaptive than fixed thresholds. But raw counts don't account for driver velocity (a driver 5 minutes away is less valuable than one 1 minute away).",
+              "tradeoff": "Doesn't account for driver proximity or velocity; can be gamed by drivers clustering.",
+              "isRecommended": false
+            },
+            {
+              "title": "ML-Based Surge with Supply/Demand Features",
+              "description": "A gradient boosted model predicts the optimal surge multiplier using features: demand_count, supply_count, historical_demand (same time last week), weather, events, time_of_day. The model is trained to maximize driver utilization while minimizing rider wait time. Surge multipliers are computed every 60 seconds per geohash cell (precision 5 = ~5km cells) and stored in Redis.",
+              "tradeoff": "ML model adds complexity; requires retraining as demand patterns change; harder to explain",
+              "isRecommended": true
+            },
+            {
+              "title": "to regulators.",
+              "description": "Surge Zone Display Polling Rider app polls GET /surge/zones every 30 seconds. Surge zones change every 60 seconds; 30-second polling is acceptable but wastes bandwidth for riders not actively looking at the map.",
+              "tradeoff": "Unnecessary bandwidth; slight delay in showing surge changes.",
+              "isRecommended": false
+            },
+            {
+              "title": "Push via WebSocket on Zone Change",
+              "description": "When surge multipliers change, the Surge Service publishes zone updates to Kafka. A push service sends updates to riders in affected zones via WebSocket. Riders only receive updates when surge changes in their area. Reduces bandwidth and provides real-time surge visibility. Rider location is used to determine which zone updates to send.",
+              "tradeoff": "Requires knowing rider location; WebSocket connection management overhead.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Service",
+            "responsibility": "Reads demand/supply counts from Redis; runs ML model; writes surge multipliers to Redis"
+          },
+          {
+            "name": "Demand Counter",
+            "responsibility": "Counts ride requests per geohash cell in 5-minute sliding windows; stored in Redis"
+          },
+          {
+            "name": "Supply Counter",
+            "responsibility": "Counts available drivers per geohash cell; updated by Driver Location"
+          },
+          {
+            "name": "Redis Surge Store",
+            "responsibility": "Stores current surge multipliers per geohash cell; TTL = 120 seconds"
+          },
+          {
+            "name": "Surge Push Service",
+            "responsibility": "Detects multiplier changes; pushes zone updates to riders via WebSocket"
+          },
+          {
+            "name": "Price Lock Service",
+            "responsibility": "Locks the surge multiplier at ride request time; stores in Ride DB"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Price Locking",
+          "content": "When a rider requests a ride, the current surge multiplier for their pickup zone is locked into the ride record.\nThis multiplier is used for billing regardless of how surge changes during the ride. The Price Lock Service reads\nthe multiplier from Redis at request time and writes it to the Ride DB. This prevents the unfair scenario where a\nrider's price increases mid-ride."
+        },
+        {
+          "title": "3. Surge Gaming Prevention",
+          "content": "Drivers can game surge pricing by clustering in a zone to artificially reduce supply. The system detects this by\ncomparing the number of drivers in a zone against the number of completed rides from that zone. If the ratio is\nabnormally high (many drivers, few rides), the supply count is adjusted downward. Additionally, surge\nmultipliers are smoothed over time to prevent rapid oscillations."
+        },
+        {
+          "title": "4. Regulatory Compliance",
+          "content": "Some cities cap surge multipliers during emergencies (e.g., 1.5x during natural disasters). The Surge\nComputation Service reads city-specific caps from a configuration store and applies them before writing to\nRedis. Surge history is logged to Cassandra for regulatory audits."
+        },
+        {
+          "title": "5. Surge Prediction",
+          "content": "A separate ML model predicts surge zones 15 minutes in advance using historical patterns, scheduled events\n(concerts, sports games), and weather forecasts. Predicted surge zones are shown to drivers as 'heat maps' to\nencourage them to pre-position in high-demand areas. This proactive supply management reduces the\nfrequency and magnitude of surge events."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Lyft Surge Pricing — System Design\nDemand · Supply · Compute · Lock\nRider\nmap view\nSurge API\nDemand Counter\nRedis sliding win\nSupply Counter\nRedis Geo counts\nSurge Comp Svc\nML model 60s\nRedis Surge\nmultipliers/zone\nKafka\nsurge changes\nPush Svc\nWebSocket zones\nPrice Lock Svc\nlock at request\nGET /surge\nread multiplier\ndemand counts\nsupply counts\nwrite multiplier\npublish changes\nzone updates\nWS push\nrequest ride\n lock multiplier",
+      "keyFlows": [
+        "① Demand Counter tracks ride requests per geohash (5-min sliding window)",
+        "② Supply Counter tracks available drivers per geohash (from Redis Geo)",
+        "③ Surge Comp Svc runs ML model every 60s → writes multipliers to Redis",
+        "④ Changed multipliers → Kafka → Push Svc → WebSocket to riders in zone",
+        "⑤ Rider requests ride → Price Lock Svc reads Redis → locks multiplier in DB"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study dynamic pricing theory: how Lyft and Uber use surge pricing to balance supply and\ndemand, the elasticity of demand for ride-sharing, and the welfare effects of surge pricing.\nExpert Note: Learn about geohash precision levels for surge zones: why precision 5 (~5km cells) is\nappropriate for surge, and how to aggregate counts across cells for smooth zone boundaries.\nExpert Note: Understand sliding window counters in Redis: how to implement a 5-minute sliding window\nusing sorted sets (ZADD with timestamp as score, ZREMRANGEBYSCORE to expire old entries).\nExpert Note: Study gradient boosted trees for pricing models: how to handle temporal features\n(time-of-day, day-of-week), how to prevent overfitting to historical surge patterns.\nExpert Note: Learn about price locking in distributed systems: how to ensure the locked price is consistent\nacross the ride request, matching, and billing services using a distributed transaction or saga pattern."
+    }
+  }
+}

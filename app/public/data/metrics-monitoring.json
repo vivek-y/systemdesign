@@ -1,0 +1,180 @@
+{
+  "id": "metrics-monitoring",
+  "name": "Metrics Monitoring",
+  "overview": "A metrics monitoring system collects time-series metrics from thousands of services and infrastructure\ncomponents, stores them efficiently, evaluates alerting rules, and serves queries for dashboards. The system\nmust handle millions of metric data points per second, store months of historical data efficiently, evaluate\nthousands of alerting rules in near-real-time, and serve dashboard queries with sub-second latency. Think\nPrometheus + Grafana at scale.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Ingest metrics from services (counters, gauges, histograms)",
+        "Store metrics with configurable retention (30 days hot, 1 year cold)",
+        "Evaluate alerting rules every 60 seconds",
+        "Serve dashboard queries with <1s latency",
+        "Handle 1M data points/second ingestion"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 10k services emitting 1M unique metric series",
+        "Ingest 1M data points/second without dropping samples",
+        "Dashboard query latency <1 second for 24-hour range queries",
+        "Alert evaluation latency <60 seconds from metric ingestion to notification",
+        "Hot data (last 24h) served from local TSDB; cold data (up to 1 year) from object storage",
+        "Horizontally scalable: add Prometheus instances and Thanos store nodes without downtime"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "MetricSample",
+          "schema": "{\n  metric_name: string,  // e.g., 'http_requests_total'\n  labels: map<string,string>,  // e.g., {service: 'api', status: '200'}\n  value: float64,\n  timestamp: int64  // Unix milliseconds\n}"
+        },
+        {
+          "name": "AlertRule",
+          "schema": "{\n  rule_id: UUID,\n  name: string,\n  query: string,  // PromQL expression\n  condition: string,  // e.g., '> 0.95'\n  duration: string,  // e.g., '5m' (must be true for 5 min)\n  severity: enum(CRITICAL|WARNING|INFO),\n  notification_channels: [string]\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/metrics",
+          "description": "Ingest metrics (Prometheus remote write)",
+          "request": "Protobuf-encoded TimeSeries[]",
+          "response": "(no content)"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/query",
+          "description": "Instant query",
+          "request": "",
+          "response": "{ result_type, result: [{ metric, value }] }"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/query_range",
+          "description": "Range query",
+          "request": "",
+          "response": "{ result: [{ metric, values: [[timestamp, value]] }] }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Metric Storage",
+          "approaches": [
+            {
+              "title": "Relational DB (MySQL)",
+              "description": "Store each metric sample as a row: (metric_name, labels_json, value, timestamp). At 1M samples/sec, MySQL cannot sustain the write load. Range queries over millions of rows are slow. JSON label storage is inefficient.",
+              "tradeoff": "Write throughput too low; query performance poor; storage inefficient.",
+              "isRecommended": false
+            },
+            {
+              "title": "InfluxDB / TimescaleDB",
+              "description": "Use a purpose-built time-series database. InfluxDB uses a TSM (Time-Structured Merge Tree) storage engine optimized for time-series writes and range queries. Handles 1M writes/sec with horizontal scaling. Efficient columnar storage with compression.",
+              "tradeoff": "InfluxDB clustering is complex; TimescaleDB requires PostgreSQL expertise; both have",
+              "isRecommended": false
+            },
+            {
+              "title": "scaling limits.",
+              "description": "Prometheus TSDB + Thanos for Long-Term Storage [RECOMMENDED] Each region runs a Prometheus instance with its local TSDB (2-hour blocks, compressed with Gorilla encoding). Thanos Sidecar uploads blocks to S3 for long-term storage. Thanos Query aggregates results from multiple Prometheus instances and S3. This gives unlimited retention without modifying Prometheus. Hot data (last 24 hours) served from Prometheus TSDB; cold data from Thanos/S3.",
+              "tradeoff": "Thanos adds operational complexity; S3 query latency higher than local TSDB.",
+              "isRecommended": false
+            }
+          ]
+        },
+        {
+          "subTopic": "Alerting",
+          "approaches": [
+            {
+              "title": "Polling-Based Alerting",
+              "description": "A cron job runs every minute, evaluates all alert rules against the metric DB, and sends notifications. At 10k alert rules, evaluation takes >1 minute. Rules can't be evaluated at sub-minute granularity.",
+              "tradeoff": "Evaluation too slow for 10k rules; minimum 1-minute granularity.",
+              "isRecommended": false
+            },
+            {
+              "title": "Prometheus Alertmanager",
+              "description": "Prometheus evaluates alert rules every 15 seconds using its built-in rule engine. Firing alerts are sent to Alertmanager, which deduplicates, groups, and routes notifications. Alertmanager supports inhibition (suppress low-severity alerts when high-severity fires) and silencing (mute alerts during maintenance). For 10k rules across multiple Prometheus instances, rules are sharded across instances.",
+              "tradeoff": "Alert evaluation is CPU-intensive; Prometheus single-node limits rule count.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Metric Ingest API",
+            "responsibility": "Receives Prometheus remote write; validates; writes to Kafka"
+          },
+          {
+            "name": "Kafka",
+            "responsibility": "Buffers metric samples; partitioned by metric_name hash"
+          },
+          {
+            "name": "Prometheus TSDB",
+            "responsibility": "Local time-series storage; 2-hour blocks; Gorilla compression"
+          },
+          {
+            "name": "Thanos Sidecar",
+            "responsibility": "Uploads TSDB blocks to S3; exposes gRPC store API"
+          },
+          {
+            "name": "Thanos Query",
+            "responsibility": "Aggregates queries across Prometheus instances and S3"
+          },
+          {
+            "name": "S3 (Long-term)",
+            "responsibility": "Stores compressed TSDB blocks; 1-year retention"
+          },
+          {
+            "name": "Alertmanager",
+            "responsibility": "Deduplicates, groups, routes alert notifications"
+          },
+          {
+            "name": "Grafana",
+            "responsibility": "Dashboard visualization; queries Thanos Query endpoint"
+          },
+          {
+            "name": "Alert Rules DB",
+            "responsibility": "Stores alert rule definitions; loaded by Prometheus on startup"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. PromQL Query Execution",
+          "content": "PromQL (Prometheus Query Language) supports instant queries (value at a point in time) and range queries\n(values over a time range). Range queries are the most expensive: for a 24-hour range with 15-second step,\neach series returns 5,760 data points. Thanos Query parallelizes range queries across multiple store nodes\nand merges results. Query results are cached in Redis with a 60-second TTL."
+        },
+        {
+          "title": "3. Cardinality Management",
+          "content": "High cardinality metrics (e.g., a metric with a user_id label) can create millions of unique time series,\noverwhelming the TSDB. The Metric Ingest API enforces cardinality limits: if a metric has >10k unique label\ncombinations, new series are rejected with a 429 error. Services are required to use low-cardinality labels\n(status codes, service names) rather than high-cardinality labels (user IDs, request IDs)."
+        },
+        {
+          "title": "4. Alert Rule Evaluation",
+          "content": "Prometheus evaluates alert rules every 15 seconds. For a rule like 'error_rate > 0.05 for 5m', Prometheus\ntracks the state of each matching series: INACTIVE (condition not met), PENDING (condition met but duration\nnot elapsed), FIRING (condition met for full duration). Only FIRING alerts are sent to Alertmanager. This\nprevents flapping alerts from noisy metrics."
+        },
+        {
+          "title": "5. Long-Term Storage with Thanos",
+          "content": "Thanos Sidecar runs alongside each Prometheus instance and uploads completed 2-hour TSDB blocks to S3\nevery 2 hours. Thanos Compactor runs as a separate job that merges and downsamples old blocks: 5-minute\nresolution for data older than 7 days, 1-hour resolution for data older than 30 days. This reduces S3 storage by\n10x for old data while maintaining query capability."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Metrics Monitoring — System Design\nIngest · Store · Alert · Visualize\nServices\nPrometheus scrape\nIngest API\nKafka\nmetric samples\nPrometheus\nTSDB + rules\nThanos Sidecar\nupload blocks\nS3\nlong-term\nAlertmanager\nroute + dedup\nGrafana\ndashboards\nThanos Query\nglobal view\nremote write\npublish\nconsume\nupload blocks\nS3 blocks\nfiring alerts\nPromQL query\nquery TSDB\n query S3",
+      "keyFlows": [
+        "① Services send metrics → Ingest API → Kafka → Prometheus TSDB",
+        "② Prometheus evaluates alert rules every 15s → Alertmanager",
+        "③ Thanos Sidecar uploads 2-hour TSDB blocks to S3 every 2 hours",
+        "④ Grafana queries Thanos Query → aggregates Prometheus + S3 results",
+        "⑤ Thanos Compactor downsamples old blocks (5min/1hr resolution)"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study the Gorilla paper (Facebook, 2015): the delta-of-delta timestamp encoding and XOR\nvalue encoding algorithms, and why they achieve such high compression ratios for time-series data.\nExpert Note: Learn about PromQL in depth: the data model (metric name + labels = time series), the\ndifference between instant vectors and range vectors, and how aggregation operators work.\nExpert Note: Understand Thanos architecture: the Sidecar, Store Gateway, Querier, Compactor, and Ruler\ncomponents, and how they extend Prometheus for global view and long-term storage.\nExpert Note: Study time-series database internals: how LSM-tree-based storage (used by InfluxDB and\nPrometheus TSDB) handles high write throughput, and how compaction works.\nExpert Note: Learn about the Alertmanager routing tree: how alerts are matched to receivers using label\nmatchers, how inhibition rules suppress child alerts, and how silences work."
+    }
+  }
+}

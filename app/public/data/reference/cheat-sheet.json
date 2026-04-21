@@ -1,0 +1,367 @@
+{
+  "id": "cheat-sheet",
+  "name": "Cheat Sheet",
+  "blocks": [
+    {
+      "type": "text",
+      "content": "System Design Interview Patterns Cheat Sheet\nDistilled from 32 real system design problems: Uber, YouTube, WhatsApp, Ticketmaster, Dropbox, and more.\n1. The 4 System Archetypes\nEvery system design problem maps to one of four archetypes. Identify it first — it dictates your entire tech stack."
+    },
+    {
+      "type": "table",
+      "headers": ["Archetype", "Goal", "Primary Strategy", "DB Choice", "Cache Role", "Classic Examples"],
+      "rows": [
+        [
+          "High Consistency + High Read",
+          "100% accurate data served fast to millions",
+          "Write-Through Cache (DB + Cache in sync)",
+          "PostgreSQL (ACID)",
+          "Write-Through Redis sub-10ms reads",
+          "Ticketmaster, URL Shortener, Yelp, Delivery System"
+        ],
+        [
+          "High Consistency + High Write",
+          "No race conditions on critical writes",
+          "Distributed Locking + Pessimistic Locks",
+          "Sharded Relational (local locks)",
+          "State coordination (Is driver busy?)",
+          "Uber, Online Auction, Tinder, Lyft Matching"
+        ],
+        [
+          "High Availability + High Write",
+          "Ingest millions of events/sec, never block",
+          "Async Buffering (Queue-centric)",
+          "NoSQL: Cassandra / DynamoDB (LSM-Tree)",
+          "Intermediate counters before DB flush",
+          "Ad Clicks, WhatsApp, FB Live Comments, LeetCode"
+        ],
+        [
+          "High Availability + High Read",
+          "Global feeds <200ms, slight staleness OK",
+          "Pre-computation (Fan-out on Write)",
+          "Polyglot: Cassandra + S3 for media",
+          "Pre-computed feeds in Redis lists",
+          "FB News Feed, YouTube, Google News, Instagram"
+        ]
+      ]
+    },
+    {
+      "type": "text",
+      "content": "2. File / Media Upload Pattern (S3 Multipart)\nUsed in: YouTube, Dropbox, Instagram, WhatsApp, Yelp, Netflix\nFlow\n• Client requests upload → Service calls S3 → gets uploadId + presigned URLs per chunk\n• Client uploads chunks in parallel; tracks which chunks succeeded\n• On connection drop: call S3 ListParts(uploadId) to find missing chunks, re-upload only those\n• Client calls CompleteMultipartUpload → S3 assembles single object → fires s3:ObjectCreated event\n• Upload service receives event → saves final S3 URL to DB\nPost-Upload Processing Pipeline\n• Quarantine bucket first — virus scan + content validation before moving to public bucket\n• Rechunker worker (async) — re-chunks file per system needs (e.g., video frames)\n• Transcoder worker (async) — produces 240p/480p/720p/1080p/4K variants\n• Manifest file — references all chunks; uploaded to CDN for popular content\n• Client-side adaptive bitrate — fetches appropriate chunk per network/device from manifest\nKey Rules\n• Always include file size limits in presigned URL conditions — prevents storage bombs\n• Store uploadId in localStorage so uploads survive app restarts\n• Set S3 lifecycle policy to clean incomplete uploads after 1–2 days (they cost money)\n• Use range requests (HTTP Range header) for resumable downloads too\n\n3. Real-Time Delivery Pattern\nUsed in: WhatsApp, FB Live Comments, Lyft tracking, LeetCode results, Ticketmaster, Strava"
+    },
+    {
+      "type": "table",
+      "headers": ["Protocol", "Direction", "Best For", "Avoid When"],
+      "rows": [
+        [
+          "Long Polling",
+          "Client pulls",
+          "Low-volume, simple tools (notification badges)",
+          "High-frequency updates — wastes connections"
+        ],
+        [
+          "SSE (Server-Sent Events)",
+          "Server → Client (one-way)",
+          "Live scores, stock tickers, AI token streaming, feed updates",
+          "Bidirectional communication needed"
+        ],
+        [
+          "WebSocket",
+          "Bidirectional",
+          "Chat, collaborative editing, live tracking, multiplayer",
+          "Simple one-way push — overkill"
+        ],
+        [
+          "WebRTC",
+          "Peer-to-peer",
+          "Video/voice calls, large file transfers",
+          "Server-mediated messaging"
+        ]
+      ]
+    },
+    {
+      "type": "text",
+      "content": "Scaling WebSocket Servers\n• Use consistent hashing to route users to the same server instance\n• Store server→user mapping in Zookeeper or Redis so any instance can route\n• On server failure: new instance takes over; clients reconnect; Zookeeper updates mapping\n• For offline delivery: store messages in per-user Redis queue (TTL=30 days); flush on reconnect\n4. Geospatial / Location Pattern\nUsed in: Uber, Lyft (all 4 services), Yelp, Delivery System, Tinder\nStorage Options"
+    },
+    {
+      "type": "table",
+      "headers": ["Option", "Use Case", "Tradeoff"],
+      "rows": [
+        [
+          "Redis GEOADD / GEORADIUS",
+          "Real-time driver positions, proximity queries <5ms",
+          "No persistence; shard by geohash prefix for scale"
+        ],
+        [
+          "PostGIS (ST_DWithin)",
+          "Business search, polygon queries, source of truth",
+          "Complex query planning; PostgreSQL scale limits"
+        ],
+        [
+          "Elasticsearch geo_point",
+          "Combined geo + text + rating search (Yelp)",
+          "Sync lag from PostgreSQL via Kafka"
+        ],
+        [
+          "Geohash cells",
+          "Surge zones, sharding key, cache key for ETAs",
+          "Cross-cell boundary queries need neighbor lookup"
+        ],
+        [
+          "H3 hexagonal grid (Uber)",
+          "Uniform area cells, better proximity math",
+          "More complex than geohash"
+        ]
+      ]
+    },
+    {
+      "type": "text",
+      "content": "Geohash Sharding Pattern\n• Shard Redis by geohash prefix (4 chars ≈ 40km cells)\n• Proximity query fans out to target cell + 8 neighbors → parallelized, <10ms\n• Driver offline detection: no heartbeat for 30s → remove from geospatial index\n• Apply Kalman filter to smooth GPS noise before storing\n5. Caching Patterns"
+    },
+    {
+      "type": "table",
+      "headers": ["Pattern", "How It Works", "Best For", "Avoid When"],
+      "rows": [
+        [
+          "Write-Through",
+          "Write to DB and cache atomically",
+          "High consistency reads (Ticketmaster seats)",
+          "Write-heavy — doubles write cost"
+        ],
+        [
+          "Cache-Aside (Lazy)",
+          "Read from cache; miss → load from DB → populate",
+          "General purpose reads",
+          "High consistency needed — race window on miss"
+        ],
+        [
+          "Write-Behind (Write-Back)",
+          "Write to cache first; async flush to DB",
+          "Write-heavy counters (view counts)",
+          "Data loss on cache crash unacceptable"
+        ],
+        [
+          "Read-Through",
+          "Cache sits in front; auto-loads on miss",
+          "Transparent caching layer",
+          "Complex invalidation logic"
+        ],
+        [
+          "Pre-computed / Fan-out",
+          "Push data into cache on write (news feed)",
+          "High read, low write (celebrity posts)",
+          "High write rate — fan-out storm"
+        ]
+      ]
+    },
+    {
+      "type": "text",
+      "content": "Cache Invalidation\n• Version-based: push new version to cache; old version phases out via TTL/LRU\n• Delete-on-write: delete key on DB update; next request repopulates (cache-aside)\n• CDC (Change Data Capture): Debezium streams DB changes → Kafka → invalidate cache key\n• Short TTL as safety net: even if invalidation fails, stale data expires\nHot Key Problem\n• Spread hot key across N sub-keys (post123-0..post123-N); readers sum all sub-keys\n• Probabilistic early refresh: refresh at 50min if TTL is 60min — prevents thundering herd\n• Request coalescing: combine concurrent misses for same key into one backend call\n6. Database Selection Guide"
+    },
+    {
+      "type": "table",
+      "headers": ["Need", "Choose", "Why"],
+      "rows": [
+        ["Default starting point", "PostgreSQL", "ACID, joins, ad-hoc queries, extensions"],
+        ["Sub-millisecond reads / counters at huge QPS", "Redis", "In-memory, O(1) ops, atomic INCR"],
+        ["Known access patterns, massive scale, simple key lookups", "DynamoDB", "Predictable latency, auto-sharding, serverless"],
+        ["Heavy text search with relevance, prefixes, facets", "Elasticsearch", "Inverted index, BM25, geo queries"],
+        ["Write-heavy time-ordered data (metrics, events, IoT)", "Cassandra / TimescaleDB", "LSM-Tree: 10x faster writes than B-Tree"],
+        ["Large blobs: images, videos, documents", "S3 / Object Storage", "Cheap, durable, CDN-friendly"],
+        ["Geospatial polygons + precise queries", "PostGIS (PostgreSQL ext.)", "GiST spatial index, ST_DWithin"],
+        ["Social graph traversal", "Neo4j / Cassandra", "Graph-native or wide-column for adjacency"],
+        ["Semantic / vector search", "Faiss / Pinecone", "ANN search for embeddings"]
+      ]
+    },
+    {
+      "type": "text",
+      "content": "Rule of thumb: Default to Postgres. Add Redis for speed. Add Elasticsearch for search. Choose DynamoDB when you have a stable partition key and need near-limitless scale.\n7. Queue / Messaging Selection Guide"
+    },
+    {
+      "type": "table",
+      "headers": ["Need", "Choose"],
+      "rows": [
+        ["Default background jobs, retries, DLQ", "SQS (managed, simple, auto-scales)"],
+        ["Massive throughput, ordered by key, replay history", "Kafka (log-based, consumer offsets)"],
+        ["Pub/sub fan-out to many consumers", "SNS + SQS per consumer, or Kafka topics"],
+        ["Complex routing, per-message acks, priorities", "RabbitMQ"],
+        ["Fast lightweight work queues, modest durability", "Redis Streams"],
+        ["Ephemeral real-time notifications (loss OK)", "Redis Pub/Sub or WebSocket broadcast"],
+        ["Strict FIFO with limited throughput", "SQS FIFO or Kafka partition-per-key"],
+        ["Delayed / scheduled jobs", "SQS delay, or scheduler → queue"],
+        ["Exactly-once across many steps", "Workflow engine (Step Functions, Temporal) + outbox pattern"]
+      ]
+    },
+    {
+      "type": "text",
+      "content": "Rule of thumb: Default to SQS for jobs. Kafka for high-scale streams and replay. Redis Streams for fast lightweight queues. Pub/Sub only when loss is acceptable.\n8. Concurrency & Contention Patterns"
+    },
+    {
+      "type": "table",
+      "headers": ["Strategy", "Architecture", "Contention", "How It Works", "Best Use Case"],
+      "rows": [
+        [
+          "Pessimistic Lock",
+          "Single DB",
+          "High",
+          "Lock row upfront; blocks others until commit",
+          "Same-row hot writes (stock inventory, seat booking)"
+        ],
+        [
+          "Optimistic Lock",
+          "Single DB",
+          "Low",
+          "Version number; retry only on conflict",
+          "Profile updates, wiki pages, low-traffic CMS"
+        ],
+        [
+          "2-Phase Commit (2PC)",
+          "Multi-DB",
+          "Strong consistency",
+          "Coordinator: Prepare → Commit across all DBs",
+          "Financial ledgers, atomic cross-service writes"
+        ],
+        [
+          "Saga Pattern",
+          "Multi-DB",
+          "Eventual consistency",
+          "Sequence of local txns; compensating txns on failure",
+          "Microservices: Order → Payment → Shipping"
+        ],
+        [
+          "Distributed Lock",
+          "Distributed",
+          "High",
+          "Redis SETNX/Redlock or Zookeeper; one process at a time",
+          "Prevent double-claim on drivers, limited offers"
+        ],
+        [
+          "Reservation Pattern",
+          "User-facing",
+          "High UX priority",
+          "Soft lock (TTL) holds resource for X minutes",
+          "Ticketing seat selection, e-commerce carts"
+        ]
+      ]
+    },
+    {
+      "type": "text",
+      "content": "Deadlock Prevention\n• Always acquire locks in a consistent deterministic order (e.g., sort by user_id before locking)\n• Set transaction timeouts as a fallback; most DBs have automatic deadlock detection\n9. Pagination"
+    },
+    {
+      "type": "table",
+      "headers": ["Type", "How", "Consistency", "Performance", "Use Case"],
+      "rows": [
+        [
+          "Offset-based (LIMIT/OFFSET)",
+          "Page number × page size",
+          "Risk of duplicates/skips if rows change",
+          "O(N) scan — degrades at high offsets",
+          "Small static datasets; 'Jump to page X'"
+        ],
+        [
+          "Cursor-based (after=ID)",
+          "Opaque pointer (created_at + id)",
+          "Stable — unaffected by inserts/deletes",
+          "O(log N) indexed lookup",
+          "Infinite scroll; large dynamic feeds"
+        ]
+      ]
+    },
+    {
+      "type": "text",
+      "content": "Rule: Always use cursor-based pagination for feeds and large datasets. Use a stable unique sort key (created_at + id). Pass an opaque cursor to the client.\n10. Search Patterns\nFull-Text Search Stack\n• Source of truth: PostgreSQL stores canonical data\n• Search index: Elasticsearch synced via Kafka CDC (Debezium)\n• Ranking: BM25 relevance + distance + rating + recency (weights tuned via A/B)\n• Semantic search: Pre-compute embeddings → store in Faiss vector DB → merge with BM25 results\n• Autocomplete: Elasticsearch prefix queries or Redis sorted sets (ZADD with score=0, lex order)\nSync Pattern: PostgreSQL → Elasticsearch\n• Debezium captures DB changes → publishes to Kafka → ES consumer updates index in <1s\n• On data drift: re-index from DB snapshot; use index aliases to swap without downtime\n11. Rate Limiting Algorithms"
+    },
+    {
+      "type": "table",
+      "headers": ["Algorithm", "How It Works", "Pros", "Cons"],
+      "rows": [
+        [
+          "Token Bucket",
+          "Bucket fills at fixed rate; each request consumes a token",
+          "Allows bursts up to bucket size",
+          "Slightly complex to implement"
+        ],
+        [
+          "Leaky Bucket",
+          "Requests queue; processed at fixed rate",
+          "Smooth output rate",
+          "Queued requests add latency"
+        ],
+        [
+          "Fixed Window Counter",
+          "Count requests per time window (e.g., per minute)",
+          "Simple",
+          "Boundary burst: 2x rate at window edge"
+        ],
+        [
+          "Sliding Window Log",
+          "Log each request timestamp; count in rolling window",
+          "Accurate",
+          "Memory-intensive at high QPS"
+        ],
+        [
+          "Sliding Window Counter",
+          "Weighted blend of current + previous window counts",
+          "Accurate + memory efficient",
+          "Approximate"
+        ]
+      ]
+    },
+    {
+      "type": "text",
+      "content": "• Store counters in Redis with TTL. Use Lua scripts for atomic check-and-increment.\n• Distribute rate limiting across nodes using consistent hashing on user_id.\n• Return 429 Too Many Requests with Retry-After header.\n12. Fan-Out Patterns (News Feed / Notifications)\nFan-out on Write (Push)\n• On post creation: write post to each follower's feed cache immediately\n• Pro: O(1) read — feed is pre-built in Redis list\n• Con: Celebrity with 100M followers = 100M writes per post (fan-out storm)\n• Fix: Hybrid — push to regular users; celebrities use pull at read time\nFan-out on Read (Pull)\n• At read time: fetch posts from all followed users and merge\n• Pro: No write amplification\n• Con: O(N) read — slow for users following thousands of accounts\nHybrid (Recommended for large systems)\n• Push to followers with <1000 followers; pull from celebrities (>1M followers) at read time\n• Use Bloom filters to skip already-seen content\n• Use Kafka to trigger async fan-out workers; batch followers in groups of 100\n13. Consistency Patterns\nRead-Your-Writes\n• After a write, pin the user's session to the primary DB for 10 seconds\n• Or: route reads to primary if request timestamp < last_write_timestamp + 10s\nEventual Consistency Signals\n• View counts, like counts, follower counts — eventual consistency is fine\n• Use Redis INCR for counters; flush to DB every 60s\n• For viral content: shard counter across N Redis keys; sum at read time\nOutbox Pattern (Guaranteed Event Delivery)\n• Write business data AND event to same DB transaction (outbox table)\n• Separate poller/CDC reads outbox → publishes to Kafka → marks as sent\n• Guarantees event is only published if DB write succeeded\n14. Distributed Systems Fundamentals\nConsistent Hashing\n• Hash nodes and keys onto a ring; walk clockwise to find node\n• Adding/removing a node only moves ~1/N of keys (vs. full reshuffle with modulo)\n• Virtual nodes: each server maps to multiple ring points → even load distribution\n• Use for: Redis cluster sharding, CDN routing, session affinity\nCAP Theorem in Practice"
+    },
+    {
+      "type": "table",
+      "headers": ["System", "Choice", "Reasoning"],
+      "rows": [
+        [
+          "Driver location (Uber/Lyft)",
+          "AP (Availability + Partition tolerance)",
+          "Slightly stale position is fine; must stay online"
+        ],
+        [
+          "Trip assignment / Booking",
+          "CP (Consistency + Partition tolerance)",
+          "Double-booking is catastrophic; prefer to fail"
+        ],
+        [
+          "Messaging (WhatsApp)",
+          "AP",
+          "Deliver out-of-order; sequence numbers restore order"
+        ],
+        [
+          "Financial transactions",
+          "CP",
+          "Money must be consistent; availability is secondary"
+        ]
+      ]
+    },
+    {
+      "type": "text",
+      "content": "Idempotency\n• Assign a UUID idempotency key per operation (user_id + action + timestamp)\n• Before processing: check Redis/DB for existing key → return cached result if found\n• Prevents double-charge, double-bid, duplicate job execution\n\n15. Async Job Queue Patterns\nReliability Patterns\n• Dead Letter Queue (DLQ): After 3–5 failures, move job to DLQ for human inspection\n• Heartbeat: Worker pings queue every N seconds; if missed, job is re-queued\n• Idempotency keys: Deduplicate jobs before processing; return existing result\n• Backpressure: Return 503 when queue depth exceeds threshold; autoscale workers on queue depth (not CPU)\nJob Dependency Orchestration\n• Simple chains: each worker enqueues the next job before marking itself complete\n• Complex workflows: use AWS Step Functions, Temporal, or Airflow\n• Mixed workloads: separate queues by expected duration (fast/slow) to prevent head-of-line blocking\n16. Monitoring & Observability\nMetrics Pipeline\n• Agents on each host collect metrics → push to Kafka → stream processor (Flink) aggregates\n• Time-series DB (Prometheus/TimescaleDB) stores aggregated metrics\n• Alerting rules trigger on threshold breaches; PagerDuty/OpsGenie for on-call\nKey Metrics to Track\n• Queue depth (not CPU) for autoscaling workers\n• ETA accuracy (predicted vs. actual) for routing services\n• Cache hit rate — if low, reconsider caching strategy\n• P99 latency — not just average; tail latency matters\n• Replication lag — for read replicas and CDC pipelines\n17. Security & Privacy Patterns\n• Presigned URLs: Generate time-limited S3 URLs server-side; client uploads/downloads directly\n• End-to-end encryption: Signal Protocol (X3DH + Double Ratchet); server never sees plaintext\n• Crypto-shredding (GDPR): Encrypt user data with per-user key; delete key to render data unreadable\n• Soft deletes: Set deleted_at timestamp; nullify PII but keep ID for financial records\n• Sandbox isolation: gVisor/Firecracker for untrusted code; seccomp-bpf syscall filters\n• Abuse prevention: Quarantine bucket → scan → approve before making content public\n18. Quick Reference: Problem → Pattern"
+    },
+    {
+      "type": "table",
+      "headers": ["Problem", "Pattern / Solution"],
+      "rows": [
+        ["Large file upload", "S3 Multipart Upload + presigned URLs + resumable chunks"],
+        ["Real-time feed updates", "SSE or WebSocket + Kafka fan-out + Redis pre-computed list"],
+        ["Find nearby drivers/businesses", "Redis GEOADD/GEORADIUS sharded by geohash"],
+        ["Prevent double-booking", "Redis distributed lock (SETNX) + pessimistic DB row lock"],
+        ["Scale read-heavy system", "Read replicas → Redis cache → CDN (in that order)"],
+        ["Scale write-heavy system", "Shard DB → Kafka queue → batch writes → NoSQL LSM-Tree"],
+        ["Search with geo + text + rating", "Elasticsearch geo_point + BM25 + function score"],
+        ["Sync file changes across devices", "OS file watcher → sync agent → SSE notification → pull delta"],
+        ["Encode long URL to short", "Auto-increment ID → Base62 encode (or SHA-256 → take N bits)"],
+        ["Count views at massive scale", "Redis INCR (sharded for viral) → flush to DB every 60s"],
+        ["Deliver messages to offline users", "Per-user Redis queue (TTL=30d) → flush on reconnect"],
+        ["Transcode video at scale", "Split into 2-min segments → parallel GPU workers → HLS manifest"],
+        ["Compute surge pricing", "Sliding window counters in Redis → ML model every 60s → push via WebSocket"],
+        ["Crawl web at scale", "Two-level URL frontier + Bloom filter dedup + consistent hash by domain"],
+        ["Schedule distributed jobs", "Kafka + Redis sorted set (score=run_time) + worker pool"],
+        ["Rate limit at scale", "Token bucket in Redis + Lua atomic script + 429 response"]
+      ]
+    }
+  ]
+}

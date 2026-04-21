@@ -1,0 +1,167 @@
+{
+  "id": "google-docs",
+  "name": "Google Docs",
+  "overview": "Google Docs is a real-time collaborative document editor where multiple users can simultaneously edit the\nsame document and see each other's changes instantly. The core challenge is conflict resolution: when two\nusers edit the same part of a document simultaneously, their changes must be merged correctly without data\nloss. The system must handle millions of concurrent documents, support rich text formatting, maintain a\ncomplete edit history, and work reliably over unreliable network connections.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Real-time collaborative editing (multiple simultaneous editors)",
+        "Conflict-free merge of concurrent edits",
+        "Persistent document storage with full edit history",
+        "Cursor presence (see where other users are editing)",
+        "Offline editing with sync on reconnect",
+        "Support documents up to 1M characters"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support millions of concurrent documents with multiple simultaneous editors per document",
+        "Operation propagation latency <100ms between collaborators on the same document",
+        "All clients must converge to the same document state — no data loss from concurrent edits",
+        "99.99% availability; document loss is catastrophic",
+        "Offline edits must sync correctly on reconnect, even after hundreds of concurrent remote operations",
+        "Full edit history retained indefinitely; snapshot every 1000 ops for fast recovery"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Document",
+          "schema": "{\n  doc_id: UUID,\n  owner_id: string,\n  title: string,\n\n  content: string,  // current state\n  version: int,\n  created_at: timestamp,\n  updated_at: timestamp\n}"
+        },
+        {
+          "name": "Operation",
+          "schema": "{\n  op_id: UUID,\n  doc_id: UUID,\n  user_id: string,\n  type: enum(INSERT|DELETE|RETAIN),\n  position: int,\n  content: string,  // for INSERT\n  length: int,      // for DELETE/RETAIN\n  version: int,     // document version this op was based on\n  timestamp: ISO8601\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/v1/docs/{doc_id}",
+          "description": "",
+          "request": "",
+          "response": "{ doc_id, title, content, version, collaborators: [...] }"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/docs/{doc_id}/history",
+          "description": "",
+          "request": "",
+          "response": "{ operations: [{ op_id, user_id, type, position, content, timestamp }] }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Conflict Resolution Algorithm",
+          "approaches": [
+            {
+              "title": "Last Write Wins",
+              "description": "The last operation received by the server overwrites any conflicting operations. Data loss is unacceptable for a document editor. If two users type simultaneously, one user's changes are silently discarded.",
+              "tradeoff": "Data loss; unacceptable for collaborative editing.",
+              "isRecommended": false
+            },
+            {
+              "title": "Operational Transformation (OT)",
+              "description": "Each operation is transformed against concurrent operations before being applied. The transform function adjusts positions to account for insertions/deletions by other users. OT is the algorithm used by Google Docs. It guarantees convergence (all clients reach the same state) and intention preservation (your edit does what you intended). OT is complex to implement correctly, especially for rich text with formatting operations.",
+              "tradeoff": "Complex to implement; requires a central server to serialize operations; hard to extend to new",
+              "isRecommended": false
+            },
+            {
+              "title": "operation types.",
+              "description": "CRDTs (Conflict-free Replicated Data Types) [RECOMMENDED] Use a CRDT (specifically a sequence CRDT like RGA or LSEQ) to represent the document. Each character has a unique ID; insertions and deletions are commutative and idempotent. CRDTs don't require a central server for conflict resolution — clients can merge changes peer-to-peer. Offline editing is naturally supported. For this design, we use OT (as Google Docs does) for its proven track record, but note CRDTs as the modern alternative.",
+              "tradeoff": "CRDTs have higher memory overhead per character; some CRDT implementations have",
+              "isRecommended": false
+            },
+            {
+              "title": "tombstone accumulation issues.",
+              "description": "Operation Ordering Client Timestamps Use client-side timestamps to order operations. Clock skew between clients makes this unreliable. Two operations with the same timestamp have undefined ordering.",
+              "tradeoff": "Clock skew causes inconsistent ordering across clients.",
+              "isRecommended": false
+            },
+            {
+              "title": "Server-Side Sequencing",
+              "description": "The server assigns a monotonically increasing sequence number to each operation. All clients apply operations in sequence number order. The server is the single source of truth for operation ordering. Clients buffer out-of-order operations and apply them in sequence. The server uses a single-writer model per document (one server owns each document) to ensure sequential numbering without coordination.",
+              "tradeoff": "Single server per document limits throughput; server is a bottleneck for very popular",
+              "isRecommended": true
+            },
+            {
+              "title": "documents.",
+              "description": "",
+              "tradeoff": "",
+              "isRecommended": false
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Collaboration Server",
+            "responsibility": "Owns a set of documents; receives operations via WebSocket; applies"
+          },
+          {
+            "name": "Operation Log (Kafka)",
+            "responsibility": "Durable log of all operations per document; enables replay and history"
+          },
+          {
+            "name": "Document Store",
+            "responsibility": "(Spanner) Stores current document state and version; globally consistent"
+          },
+          {
+            "name": "Operation History",
+            "responsibility": "(Bigtable) Stores all historical operations; row key = doc_id + sequence_number"
+          },
+          {
+            "name": "Presence Service",
+            "responsibility": "Tracks cursor positions and active collaborators; uses Redis pub/sub"
+          },
+          {
+            "name": "Load Balancer (sticky)",
+            "responsibility": "Routes all connections for a given doc_id to the same Collaboration"
+          },
+          {
+            "name": "Snapshot Service",
+            "responsibility": "Periodically snapshots document state to reduce replay time on server restart"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Offline Editing",
+          "content": "When a client goes offline, it continues editing locally. Operations are buffered in the client's local storage. On\nreconnect, the client sends all buffered operations to the server. The server transforms each buffered operation\nagainst all operations that occurred while the client was offline (using the client's last known version as the\nbase). This can involve transforming against hundreds of operations for long offline periods."
+        },
+        {
+          "title": "3. Document Snapshots",
+          "content": "Replaying all operations from the beginning to reconstruct a document is too slow for large documents. The\nSnapshot Service takes a snapshot of the document state every 1000 operations. On server restart, the\ndocument is loaded from the latest snapshot and only the operations since the snapshot are replayed.\nSnapshots are stored in Bigtable alongside the operation log."
+        },
+        {
+          "title": "4. Cursor Presence",
+          "content": "Each client sends cursor position updates every 500ms (or on cursor movement). The Presence Service stores\ncursor positions in Redis (key = doc_id:user_id, value = position, TTL = 5 seconds). When a cursor update is\nreceived, it's broadcast to all other clients editing the same document via Redis pub/sub. Cursor positions must\nbe transformed against incoming operations (same OT logic) to remain accurate."
+        },
+        {
+          "title": "5. Access Control",
+          "content": "Documents have three permission levels: OWNER, EDITOR, VIEWER. The Collaboration Server checks\npermissions on WebSocket connection. VIEWERs receive operation broadcasts but their own operations are\nrejected. Sharing is managed via a separate Sharing Service that updates the document's ACL in Spanner.\nPermission changes take effect within 30 seconds (ACL cache TTL)."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Google Docs — System Design\nEdit · Transform · Sync · Persist\nClient A/B\nWebSocket\nCollab Server\nOT engine\nKafka\nop log\nDoc Store\nSpanner\nOp History\nBigtable\nPresence Svc\nRedis pub/sub\nSnapshot Svc\nevery 1000 ops\nLoad Balancer\nsticky by doc_id\nWS connect\nroute to server\nbroadcast ops\npublish op\npersist state\nop history\ncursor update\nbroadcast cursor\nsnapshot trigger",
+      "keyFlows": [
+        "① Client sends op → Load Balancer (sticky) → Collab Server",
+        "② Collab Server applies OT transform → assigns sequence number",
+        "③ Transformed op broadcast to all other clients via WebSocket",
+        "④ Op published to Kafka → persisted to Bigtable (history) + Spanner (state)",
+        "⑤ Snapshot Svc takes state snapshot every 1000 ops for fast recovery"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study Operational Transformation in depth: read the original Jupiter OT paper, understand\nthe transformation functions for all operation type combinations, and why OT requires a central server.\nExpert Note: Learn about CRDTs for text editing: the RGA (Replicated Growable Array) and LSEQ\nalgorithms, how they assign unique IDs to characters, and how they handle concurrent insertions at the\nsame position.\nExpert Note: Understand Google Spanner's TrueTime API: how it uses GPS and atomic clocks to provide\nglobally consistent timestamps, enabling external consistency without distributed locks.\nExpert Note: Study the Diamond Problem in OT: why naive OT implementations fail for 3+ concurrent\nusers, and how the Jupiter protocol solves it with a client-server architecture.\nExpert Note: Learn about WebSocket connection management at scale: how to use consistent hashing to\nroute document connections to the same server, and how to handle server failures with connection\nmigration."
+    }
+  }
+}

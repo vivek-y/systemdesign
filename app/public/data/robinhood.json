@@ -1,0 +1,169 @@
+{
+  "id": "robinhood",
+  "name": "Robinhood",
+  "overview": "Robinhood is a commission-free stock trading platform that allows retail investors to buy and sell stocks, ETFs,\nand options. The system must display real-time stock prices, process trade orders with strong consistency,\nmaintain accurate account balances and positions, and comply with financial regulations (SEC, FINRA). The\nsystem must handle extreme load during market volatility (e.g., meme stock events) while maintaining\ncorrectness.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Display real-time stock quotes (price, volume, change)",
+        "Place market and limit orders",
+        "Maintain accurate portfolio positions and cash balance",
+        "Order execution via broker-dealer integration",
+        "Trade history and account statements"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 10M users with 1M orders/day",
+        "Real-time quote updates with <1 second latency during market hours",
+        "Order submission latency <200ms; order fill notification within seconds of broker confirmation",
+        "99.99% availability during market hours (9:30 AM–4:00 PM ET) — downtime prevents trading",
+        "Strong consistency for account balances and positions — no overselling or negative balances",
+        "Handle 10x traffic spikes during high-volatility events (meme stocks, earnings)"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Order",
+          "schema": "{\n  order_id: UUID,\n  user_id: string,\n  symbol: string,\n  order_type: enum(MARKET|LIMIT|STOP),\n  side: enum(BUY|SELL),\n\n  quantity: decimal,\n  limit_price: decimal (nullable),\n  status: enum(PENDING|SUBMITTED|FILLED|PARTIAL|CANCELLED|REJECTED),\n  filled_quantity: decimal,\n  avg_fill_price: decimal,\n  submitted_at: timestamp\n}"
+        },
+        {
+          "name": "Position",
+          "schema": "{\n  user_id: string,\n  symbol: string,\n  quantity: decimal,\n  avg_cost: decimal,\n  current_value: decimal\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/orders",
+          "description": "",
+          "request": "{ symbol, order_type, side, quantity, limit_price? }",
+          "response": "{ order_id, status: 'PENDING' }"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/quotes/{symbol}",
+          "description": "",
+          "request": "",
+          "response": "{ symbol, price, change, change_pct, volume, market_cap }\nWebSocket /v1/quotes/{symbol}/live\nServer pushes: { symbol, price, change, volume, timestamp }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Real-Time Quote Distribution",
+          "approaches": [
+            {
+              "title": "Polling Market Data API",
+              "description": "Poll a market data provider every second for all tracked symbols. At 10k symbols × 1 req/sec = 10k API calls/sec. Market data APIs charge per call. Also, 1-second polling misses intra-second price movements.",
+              "tradeoff": "Expensive; misses intra-second movements; high API call volume.",
+              "isRecommended": false
+            },
+            {
+              "title": "WebSocket Feed from Market Data Provider",
+              "description": "Subscribe to a WebSocket feed from a market data provider (Polygon.io, IEX Cloud). Receive real-time tick data for all symbols. Sub-second price updates. But the feed must be distributed to millions of users — a single WebSocket connection cannot fan out to 10M users.",
+              "tradeoff": "Fan-out from single feed to 10M users requires additional infrastructure.",
+              "isRecommended": false
+            },
+            {
+              "title": "Market Data Feed + Redis Pub/Sub Fan-out",
+              "description": "Subscribe to market data WebSocket feed. Publish price updates to Redis pub/sub channels (one per symbol). Quote servers subscribe to relevant channels and push to connected users. Users subscribe to symbols they're watching. Quote servers maintain WebSocket connections with users and push updates only for subscribed symbols. Price updates are also stored in Redis (latest price per symbol) for REST API queries.",
+              "tradeoff": "Redis pub/sub doesn't persist messages; users who miss an update must poll for current price.",
+              "isRecommended": true
+            }
+          ]
+        },
+        {
+          "subTopic": "Order Processing",
+          "approaches": [
+            {
+              "title": "Direct Broker API Call",
+              "description": "Submit orders directly to the broker-dealer API synchronously. Broker API latency (100-500ms) blocks the user request. If the broker is slow, the entire order flow is slow.",
+              "tradeoff": "Broker latency blocks user; tight coupling to broker availability.",
+              "isRecommended": false
+            },
+            {
+              "title": "Async Order Queue with Status Polling",
+              "description": "Submit order to internal queue (Kafka). Order Service processes asynchronously, submits to broker, and updates order status. User receives order_id immediately. Order status is updated asynchronously. WebSocket push notifies user when order is filled. Pre-validation (sufficient balance, market hours) is synchronous before queuing.",
+              "tradeoff": "Async processing means user doesn't know immediately if order was accepted by broker.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Quote Service",
+            "responsibility": "Subscribes to market data feed; publishes to Redis pub/sub; serves"
+          },
+          {
+            "name": "Order Service",
+            "responsibility": "Validates orders; deducts buying power; submits to broker via Kafka"
+          },
+          {
+            "name": "Broker Integration",
+            "responsibility": "Consumes Kafka; submits orders to broker-dealer API; processes fill notifications"
+          },
+          {
+            "name": "Portfolio Service",
+            "responsibility": "Maintains positions and cash balances; updated on order fills"
+          },
+          {
+            "name": "Market Data Feed",
+            "responsibility": "Real-time tick data from Polygon.io/IEX Cloud via WebSocket"
+          },
+          {
+            "name": "Redis",
+            "responsibility": "Latest prices per symbol; pub/sub channels for real-time distribution"
+          },
+          {
+            "name": "Order DB (PostgreSQL)",
+            "responsibility": "Stores all orders; ACID transactions for balance updates"
+          },
+          {
+            "name": "WebSocket Gateway",
+            "responsibility": "Maintains user connections; pushes quote updates and order status"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Order Fill Processing",
+          "content": "When the broker fills an order, it sends a fill notification via webhook or WebSocket. The Broker Integration\nservice processes the fill: (1) Update order status to FILLED, (2) Update portfolio positions (add shares for buy,\nremove for sell), (3) Update cash balance (deduct for buy, add for sell), (4) Release any remaining reservation.\nAll updates are in a single PostgreSQL transaction."
+        },
+        {
+          "title": "3. Market Hours and Circuit Breakers",
+          "content": "Orders can only be submitted during market hours (9:30 AM - 4:00 PM ET for US markets). The Order Service\nchecks market hours before accepting orders. During extreme volatility, exchanges implement circuit breakers\n(trading halts). The system monitors exchange status via the market data feed and rejects orders during halts.\nExtended hours trading (pre-market and after-hours) is supported with different order types."
+        },
+        {
+          "title": "4. Quote Throttling for Popular Stocks",
+          "content": "During meme stock events (e.g., GameStop), a single stock can receive millions of quote subscriptions. The\nQuote Service throttles updates for heavily subscribed symbols: instead of pushing every tick, it batches\nupdates and pushes every 100ms. This reduces WebSocket message volume by 10x during peak events while\nmaintaining near-real-time price visibility."
+        },
+        {
+          "title": "5. Regulatory Compliance",
+          "content": "Robinhood must comply with SEC and FINRA regulations: (1) Best execution: orders must be routed to the\nvenue offering the best price, (2) Pattern Day Trader (PDT) rule: users with <$25k equity cannot make >3 day\ntrades in 5 days, (3) Wash sale rule: selling at a loss and rebuying within 30 days disallows the tax deduction.\nThe system enforces PDT rules in the Order Service and tracks wash sales for tax reporting."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Robinhood — System Design\nQuote · Order · Fill · Portfolio\nUser\ninvestor\nQuote Svc\nOrder API\nRedis\nprices + pub/sub\nKafka\norder queue\nBroker Integ\nsubmit + fills\nBroker API\nexecution\nPortfolio Svc\npositions + cash\nWebSocket GW\npush to user\nGET /quotes\nPOST /orders\npub/sub\npush quotes\nWS push\nenqueue order\nconsume\nsubmit order\nfill → update positions",
+      "keyFlows": [
+        "① Market data feed → Quote Svc → Redis pub/sub → WebSocket → User",
+        "② User places order → Order API (validate balance) → Kafka",
+        "③ Broker Integration consumes Kafka → submits to Broker API",
+        "④ Broker fills order → fill notification → update Portfolio + Order status",
+        "⑤ WebSocket push: order filled notification to user"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study market microstructure: how stock exchanges work (order books, matching engines),\nthe difference between market orders and limit orders, and how price discovery happens.\nExpert Note: Learn about broker-dealer regulations: SEC Rule 15c3-3 (customer protection rule), FINRA\nmargin requirements, and how payment for order flow (PFOF) works.\nExpert Note: Understand the FIX protocol: the standard messaging format for financial transactions, how\norder routing works between broker-dealers and exchanges.\nExpert Note: Study the Pattern Day Trader rule: the $25k equity requirement, how day trades are counted,\nand the implications for retail trading platforms.\nExpert Note: Learn about market data distribution: how exchanges distribute real-time data via SIP\n(Securities Information Processor) and direct feeds, and the latency differences."
+    }
+  }
+}

@@ -1,0 +1,170 @@
+{
+  "id": "fb-live-comments",
+  "name": "FB Live Comments",
+  "overview": "Facebook Live Comments is a real-time commenting system for live video streams. Viewers can post\ncomments that are immediately visible to all other viewers of the same stream. The system must handle\nmassive fan-out (a popular stream may have millions of concurrent viewers), deliver comments with <500ms\nlatency, handle comment moderation, and gracefully degrade when a stream goes viral. The write rate can\nspike to 100k comments/second for major events.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Post a comment on a live stream",
+        "Receive new comments in real-time (<500ms latency)",
+        "Display last 50 comments on join",
+        "Handle 100k comments/sec during peak events",
+        "Comment moderation (hide/delete)"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 10M concurrent viewers across all streams",
+        "Comment delivery latency <500ms for online viewers",
+        "Handle 100k comments/sec during peak events (major sports, concerts)",
+        "99.9% availability; brief comment delays are tolerable over full outages",
+        "Eventual consistency for comment delivery — slight reordering acceptable; strong consistency not required",
+        "Fan-out must scale linearly: viral streams with 1M+ viewers must not degrade other streams"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Comment",
+          "schema": "{\n  comment_id: UUID,\n  stream_id: string,\n  user_id: string,\n\n  username: string,\n  text: string (max 500 chars),\n  timestamp: ISO8601,\n  status: enum(VISIBLE|HIDDEN|DELETED)\n}"
+        },
+        {
+          "name": "Stream",
+          "schema": "{\n  stream_id: string,\n  broadcaster_id: string,\n  title: string,\n  status: enum(LIVE|ENDED),\n  viewer_count: int,\n  started_at: timestamp\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/streams/{stream_id}/comments",
+          "description": "",
+          "request": "{ user_id, text }",
+          "response": "{ comment_id, timestamp }"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/streams/{stream_id}/comments/recent",
+          "description": "",
+          "request": "",
+          "response": "{ comments: [last 50 comments], cursor }\nWebSocket /v1/streams/{stream_id}/comments/live\nServer pushes: { type: 'NEW_COMMENT', comment_id, user_id, username, text, timestamp }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Comment Delivery to Viewers",
+          "approaches": [
+            {
+              "title": "Polling",
+              "description": "Each viewer polls GET /comments every second. 10M viewers × 1 req/sec = 10M req/sec. Even with caching, this is unsustainable. 1-second polling also means up to 1-second delay.",
+              "tradeoff": "Prohibitive server load; unacceptable latency.",
+              "isRecommended": false
+            },
+            {
+              "title": "WebSocket per Viewer",
+              "description": "Each viewer maintains a WebSocket connection. Comments are pushed directly. 10M concurrent WebSocket connections require ~10k connection servers (1k connections/server). Fan-out: each comment must be sent to all viewers of that stream.",
+              "tradeoff": "Fan-out for viral streams (1M viewers) is expensive; connection servers are stateful.",
+              "isRecommended": false
+            },
+            {
+              "title": "WebSocket + Pub/Sub Fan-out",
+              "description": "Viewers connect to WebSocket servers. Each WebSocket server subscribes to a Redis pub/sub channel per stream_id. When a comment is posted, it's published to the stream's Redis channel. All WebSocket servers subscribed to that channel receive it and push to their connected viewers. For viral streams (>100k viewers), use a tiered fan-out: Kafka → regional fan-out services → Redis pub/sub → WebSocket servers.",
+              "tradeoff": "Redis pub/sub doesn't persist messages; late joiners miss comments (handled by separate",
+              "isRecommended": true
+            },
+            {
+              "title": "recent-comments API).",
+              "description": "Comment Storage MySQL with stream_id Index Store all comments in MySQL, indexed by stream_id + timestamp. At 100k comments/sec, MySQL write throughput is exceeded. Queries for recent comments require full index scans.",
+              "tradeoff": "Write throughput too low; query performance degrades with table size.",
+              "isRecommended": false
+            },
+            {
+              "title": "Redis Sorted Set per Stream",
+              "description": "Store comments in a Redis sorted set (ZADD) with timestamp as score. ZREVRANGE returns the last N comments. Sub-millisecond reads and writes. But Redis is in-memory; storing all comments for all streams is expensive. No persistence for post-stream replay.",
+              "tradeoff": "Memory cost for long streams; no durable storage.",
+              "isRecommended": false
+            },
+            {
+              "title": "Redis Sorted Set (hot) + Cassandra (cold)",
+              "description": "Redis sorted set stores the last 200 comments per stream (sliding window). Cassandra stores all comments durably, partitioned by stream_id with clustering key = timestamp. On join, the client fetches the last 50 comments from Redis (fast). Historical queries go to Cassandra. Comments are written to both Redis and Cassandra asynchronously via Kafka.",
+              "tradeoff": "Dual-write complexity; slight inconsistency window between Redis and Cassandra.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Comment API",
+            "responsibility": "Validates and accepts comment posts; publishes to Kafka; returns 201"
+          },
+          {
+            "name": "Kafka",
+            "responsibility": "Durable comment event stream; partitioned by stream_id"
+          },
+          {
+            "name": "Fan-out Service",
+            "responsibility": "Consumes Kafka; publishes to Redis pub/sub channels; handles tiered fan-out for viral streams"
+          },
+          {
+            "name": "WebSocket Servers",
+            "responsibility": "Maintain viewer connections; subscribe to Redis pub/sub; push comments to viewers"
+          },
+          {
+            "name": "Redis Pub/Sub",
+            "responsibility": "Per-stream channels for real-time comment distribution"
+          },
+          {
+            "name": "Redis Sorted Set",
+            "responsibility": "Stores last 200 comments per stream for fast recent-comment queries"
+          },
+          {
+            "name": "Cassandra",
+            "responsibility": "Durable comment store; partition key = stream_id; clustering key = timestamp DESC"
+          },
+          {
+            "name": "Moderation Service",
+            "responsibility": "Scans comments for policy violations; updates comment status in"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Comment Ordering",
+          "content": "Comments must appear in chronological order. Each comment is assigned a timestamp by the Comment API\nserver. However, clock skew between servers can cause out-of-order delivery. Solution: use a hybrid logical\nclock (HLC) that combines physical time with a logical counter. HLC timestamps are monotonically increasing\neven across servers with clock skew, ensuring consistent ordering."
+        },
+        {
+          "title": "3. Moderation at Scale",
+          "content": "The Moderation Service uses a combination of: (1) keyword blocklist (synchronous, <1ms), (2) ML classifier for\nhate speech/spam (async, <100ms), and (3) human review queue for borderline cases. Comments are shown\nimmediately (optimistic display) and hidden retroactively if the ML classifier flags them. This gives the\nappearance of real-time posting while maintaining safety."
+        },
+        {
+          "title": "4. Connection Management",
+          "content": "WebSocket servers are stateless with respect to comment content — they only maintain connection state\n(user_id → socket). When a viewer connects, the WebSocket server registers the connection in Redis (user_id\n→ server_id mapping). When a viewer disconnects, the registration is removed. This allows the fan-out service\nto route targeted messages (e.g., moderation actions) to the correct WebSocket server."
+        },
+        {
+          "title": "5. Backpressure and Rate Limiting",
+          "content": "Each user is rate-limited to 1 comment per 2 seconds (Redis token bucket per user_id). The Comment API\nrejects excess comments with 429 Too Many Requests. For the fan-out pipeline, Kafka provides natural\nbackpressure: if the fan-out service falls behind, Kafka buffers the comments. The WebSocket servers\nimplement client-side flow control: if a viewer's connection is slow, comments are batched and sent in bursts."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Facebook Live Comments — System Design\nPost · Fan-out · Push · Moderate\nViewer\nbrowser/app\nComment API\nWebSocket Svc\nKafka\nby stream_id\nFan-out Svc\nviral sampling\nRedis Pub/Sub\nper-stream channel\nRedis SortedSet\nlast 200 comments\nCassandra\nall comments\nModeration\nML + blocklist\nPOST comment\nWS connect\npublish\nconsume\nwrite recent\nwrite durable\npublish channel\nsubscribe push\nmoderate\nupdate status",
+      "keyFlows": [
+        "① Viewer posts comment → Comment API → Kafka",
+        "② Fan-out Svc consumes Kafka → publishes to Redis Pub/Sub channel",
+        "③ WebSocket Svc subscribes to channel → pushes to all viewers",
+        "④ Kafka → Redis SortedSet (last 200) + Cassandra (durable)",
+        "⑤ Moderation Svc scans Kafka → hides/deletes in Cassandra + Redis"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study Redis pub/sub vs. Redis Streams: pub/sub is fire-and-forget (no persistence, no\nconsumer groups), while Streams provide durable, replayable message queues — understand when to use\neach.\nExpert Note: Learn about WebSocket connection scaling: how to use consistent hashing to route viewers\nto the same WebSocket server, and how to handle server restarts without dropping connections.\nExpert Note: Understand hybrid logical clocks (HLC): how they combine physical timestamps with logical\ncounters to provide causally consistent ordering across distributed nodes.\nExpert Note: Study comment sampling algorithms for viral streams: how to select a representative sample\nof comments while ensuring the broadcaster sees all comments.\nExpert Note: Learn about the fan-out-on-write vs. fan-out-on-read trade-off: why live comments use\nfan-out-on-write (push to all viewers immediately) while news feeds use fan-out-on-read for celebrity\naccounts.\n\nFacebook Live Comments"
+    }
+  }
+}

@@ -1,0 +1,185 @@
+{
+  "id": "distributed-cache",
+  "name": "Distributed Cache",
+  "overview": "A distributed cache stores frequently accessed data in memory across a cluster of nodes to reduce database\nload and serve requests with sub-millisecond latency. The system must support horizontal scaling (add/remove\nnodes without downtime), handle node failures gracefully, provide configurable eviction policies (LRU, LFU,\nTTL), and maintain consistency guarantees appropriate for the use case. The cache must handle millions of\noperations per second across thousands of clients.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "GET/SET/DELETE operations with <1ms p99 latency",
+        "Horizontal scaling: add/remove nodes with minimal disruption",
+        "Configurable TTL per key",
+        "LRU eviction when memory is full",
+        "Replication for fault tolerance (1 primary + 2 replicas)"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 1M ops/sec across the cluster with <1ms p99 latency",
+        "Horizontal scaling: add/remove nodes with minimal key redistribution (consistent hashing)",
+        "Fault tolerant: node failure triggers automatic replica promotion within 10 seconds",
+        "Eventual consistency for replica reads; strong consistency available for write-through mode",
+        "Memory-efficient: slab allocator prevents fragmentation; eviction protects against OOM",
+        "Zero-downtime topology changes: clients update routing via gossip without restart"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Cache Entry",
+          "schema": "{\n  key: string (max 256 bytes),\n  value: bytes (max 1MB),\n  ttl: seconds (0 = no expiry),\n  created_at: timestamp,\n  last_accessed: timestamp,\n  access_count: int\n}"
+        },
+        {
+          "name": "Node",
+          "schema": "{\n  node_id: string,\n  host: string,\n  port: int,\n  status: enum(PRIMARY|REPLICA|JOINING|LEAVING),\n  slot_range: [start, end],  // consistent hash slots\n  memory_used: bytes,\n  memory_total: bytes\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/cache/{key}",
+          "description": "",
+          "request": "",
+          "response": "{ key, value (base64), ttl_remaining }\nResponse 404: { error: 'key not found' }"
+        },
+        {
+          "method": "PUT",
+          "path": "/cache/{key}",
+          "description": "",
+          "request": "{ value (base64), ttl_seconds? }",
+          "response": "{ key, stored: true }"
+        },
+        {
+          "method": "DELETE",
+          "path": "/cache/{key}",
+          "description": "",
+          "request": "",
+          "response": "{ key, deleted: true }\nResponse 404: { error: 'key not found' }"
+        },
+        {
+          "method": "GET",
+          "path": "/cache/stats",
+          "description": "",
+          "request": "",
+          "response": "{ hit_rate, miss_rate, eviction_count, memory_used, ops_per_sec }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Key Distribution Strategy",
+          "approaches": [
+            {
+              "title": "Modulo Hashing",
+              "description": "Assign key to node using hash(key) % N where N is the number of nodes. Simple but adding or removing a node requires rehashing almost all keys (N-1)/N of all keys move). This causes a thundering herd on the database as the cache is effectively invalidated.",
+              "tradeoff": "Adding/removing nodes causes massive cache invalidation; not suitable for dynamic clusters.",
+              "isRecommended": false
+            },
+            {
+              "title": "Consistent Hashing (Basic)",
+              "description": "Map both keys and nodes to a hash ring (0 to 2^32). A key is assigned to the first node clockwise on the ring. Adding a node only moves ~1/N of keys. Removing a node only affects keys that were assigned to it. Basic consistent hashing can cause uneven distribution if nodes are not evenly spaced.",
+              "tradeoff": "Uneven load distribution without virtual nodes; hot spots possible.",
+              "isRecommended": false
+            },
+            {
+              "title": "Consistent Hashing with Virtual Nodes",
+              "description": "Each physical node is represented by 150 virtual nodes on the hash ring. This distributes load evenly even with heterogeneous node sizes. When a node joins, it takes over a proportional share of slots from its neighbors. When it leaves, its slots are distributed to neighbors. The cluster coordinator (using Raft consensus) maintains the ring topology and propagates changes to all clients via gossip protocol.",
+              "tradeoff": "More complex ring management; gossip protocol adds network overhead.",
+              "isRecommended": true
+            }
+          ]
+        },
+        {
+          "subTopic": "Eviction Policy",
+          "approaches": [
+            {
+              "title": "Simple TTL-Only Eviction",
+              "description": "Only evict keys when their TTL expires. No proactive eviction when memory is full. Memory can fill up if TTLs are long or keys have no TTL. Cache becomes unavailable when OOM.",
+              "tradeoff": "OOM risk; no protection against memory exhaustion.",
+              "isRecommended": false
+            },
+            {
+              "title": "LRU with Doubly-Linked List + HashMap",
+              "description": "Maintain a doubly-linked list ordered by access time. HashMap provides O(1) key lookup. On access, move the node to the head. On eviction, remove from the tail. Classic LRU implementation. Works well but the linked list has poor cache locality and high memory overhead per entry.",
+              "tradeoff": "High memory overhead per entry; poor CPU cache performance due to pointer chasing.",
+              "isRecommended": false
+            },
+            {
+              "title": "Segmented LRU (SLRU) with Clock Algorithm",
+              "description": "Divide cache into protected (80%) and probationary (20%) segments. New entries go to probationary. On second access, promote to protected. Eviction targets probationary segment first. The Clock algorithm approximates LRU with O(1) operations and better cache locality than linked list. Combined with TTL-based lazy expiration (check TTL on access) and periodic active expiration (scan 20 random keys every 100ms, delete expired ones).",
+              "tradeoff": "More complex implementation; SLRU requires tuning segment sizes.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Cache Nodes",
+            "responsibility": "In-memory key-value store; each node owns a range of hash slots; primary + 2 replicas"
+          },
+          {
+            "name": "Cluster Coordinator",
+            "responsibility": "Raft-based consensus service; manages ring topology; detects node failures via heartbeats"
+          },
+          {
+            "name": "Client Library",
+            "responsibility": "Consistent hashing client; routes requests to correct node; handles retries and failover"
+          },
+          {
+            "name": "Replication Manager",
+            "responsibility": "Async replication from primary to replicas; sync replication for write-through mode"
+          },
+          {
+            "name": "Eviction Engine",
+            "responsibility": "SLRU + Clock algorithm; TTL expiration; memory pressure monitoring"
+          },
+          {
+            "name": "Monitoring Service",
+            "responsibility": "Collects hit/miss rates, latency percentiles, memory usage; exposes"
+          },
+          {
+            "name": "Admin API",
+            "responsibility": "Node management (add/remove/rebalance); cache flush; stats queries"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Node Failure and Recovery",
+          "content": "The cluster coordinator sends heartbeats to all nodes every 1 second. If a node misses 3 consecutive\nheartbeats, it's marked as failed. One of its replicas is promoted to primary (the replica with the most up-to-date\ndata, determined by replication offset). The coordinator updates the ring topology and gossips the change to all\nclients. Clients that receive a 'node unavailable' error retry with the new topology."
+        },
+        {
+          "title": "3. Hot Key Problem",
+          "content": "A hot key (e.g., a viral post's metadata) can overwhelm a single cache node. Mitigation strategies: (1) Local\nclient-side cache: each application server caches the top 1000 hot keys in a local LRU cache (L1 cache),\nreducing remote cache hits. (2) Key replication: the cache client detects hot keys (>1000 req/sec) and\nreplicates them to 3 random nodes, distributing reads. (3) Request coalescing: multiple concurrent requests for\nthe same key are collapsed into a single backend request."
+        },
+        {
+          "title": "4. Memory Management",
+          "content": "Each cache node pre-allocates a fixed memory pool (e.g., 64GB) at startup to avoid OS memory fragmentation.\nThe memory pool is divided into slab classes (8B, 16B, 32B, ... 1MB) similar to Memcached's slab allocator.\nEach key-value pair is stored in the smallest slab class that fits it. This eliminates fragmentation and makes\nallocation O(1)."
+        },
+        {
+          "title": "5. Client-Side Consistent Hashing",
+          "content": "The client library maintains a local copy of the ring topology. On startup, it fetches the topology from the\ncoordinator. It subscribes to topology change events via a long-poll or WebSocket connection. When a topology\nchange is received, the client updates its local ring atomically. This means routing decisions are made entirely\nclient-side with zero network overhead, achieving sub-microsecond routing latency."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Distributed Cache — System Design\nGET · SET · Replicate · Evict\nApp Server\ncache client\nClient Lib\nconsistent hash\nCoordinator\nRaft consensus\nNode 1\nslots 0-10k\nNode 2\nslots 10k-20k\nNode 3\nslots 20k-32k\nReplica 1a\nasync repl\nReplica 2a\nasync repl\nReplica 3a\nasync repl\nMonitoring\nPrometheus\nGET/SET\ntopology\nroute to node\nroute to node\nroute to node\nasync repl\nasync repl\nasync repl\nmetrics",
+      "keyFlows": [
+        "① Client Lib hashes key → routes to correct Node (consistent hash ring)",
+        "② Node serves GET from SLRU cache; evicts LRU on memory pressure",
+        "③ SET: Primary writes → async replicates to 2 Replicas",
+        "④ Coordinator (Raft) detects node failure → promotes Replica to Primary",
+        "⑤ Topology changes gossipped to all Client Libs via long-poll"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study the Raft consensus algorithm in depth: leader election, log replication, and how it\nhandles network partitions — this is the foundation of distributed coordination.\nExpert Note: Learn about slab allocation (Memcached's approach): how pre-allocated memory pools\neliminate fragmentation, the trade-off between slab class granularity and internal fragmentation.\nExpert Note: Understand the thundering herd problem in caches: how cache stampedes occur when a\npopular key expires, and mitigation strategies like probabilistic early expiration and mutex-based request\ncoalescing.\nExpert Note: Study gossip protocols: how they propagate cluster state changes in O(log N) rounds, their\neventual consistency guarantees, and how they compare to centralized coordination.\nExpert Note: Learn about the TinyLFU admission policy used in Caffeine (Java) and how it combines a\nfrequency sketch with SLRU to achieve near-optimal hit rates."
+    }
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "id": "system-design-cheat-sheet",
+  "name": "System Design Cheat Sheet",
+  "overview": "",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": []
+    },
+    "nonFunctionalRequirements": {
+      "items": []
+    },
+    "coreEntities": {
+      "entities": []
+    },
+    "apiDesign": {
+      "endpoints": []
+    },
+    "highLevelDesign": {
+      "questions": [],
+      "systemArchitecture": {
+        "components": []
+      }
+    },
+    "deepDive": {
+      "questions": []
+    },
+    "design": {
+      "diagram": "",
+      "keyFlows": []
+    },
+    "whatToStudyFurther": {
+      "content": ""
+    }
+  }
+}

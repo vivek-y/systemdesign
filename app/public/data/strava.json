@@ -1,0 +1,177 @@
+{
+  "id": "strava",
+  "name": "Strava",
+  "overview": "Strava is a fitness tracking platform where athletes record GPS-tracked activities (runs, rides, swims), share\nthem with followers, compete on segment leaderboards, and analyze their performance over time. The system\nmust process GPS tracks efficiently, compute performance metrics (pace, elevation, power), match activities to\npredefined route segments, and serve a social feed of followers' activities. GPS data is large and requires\nefficient storage and processing.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Upload GPS activity files (GPX/FIT format)",
+        "Compute activity metrics (distance, pace, elevation, heart rate)",
+        "Match activity to route segments and compute segment times",
+        "Social feed of followed athletes' activities",
+        "Segment leaderboards (KOM/QOM)"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 100M athletes with 10M activities uploaded per day",
+        "Activity processing pipeline: metrics and segment matching complete within 60 seconds of upload",
+        "Feed load latency <200ms p99",
+        "99.9% availability; brief processing delays are tolerable over data loss",
+        "GPS processing must handle noisy coordinates and variable track lengths accurately",
+        "Segment leaderboards updated within seconds of a new effort being recorded"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Activity",
+          "schema": "{\n  activity_id: UUID,\n  athlete_id: string,\n  type: enum(RUN|RIDE|SWIM|HIKE),\n  name: string,\n  start_time: timestamp,\n\n  duration_seconds: int,\n  distance_meters: float,\n  elevation_gain_meters: float,\n  avg_pace: float,\n  avg_heart_rate: int,\n  gps_track: string,  // encoded polyline\n  status: enum(PROCESSING|PUBLISHED)\n}"
+        },
+        {
+          "name": "Segment",
+          "schema": "{\n  segment_id: UUID,\n  name: string,\n  sport_type: enum(RUN|RIDE),\n  start_latlng: [float, float],\n  end_latlng: [float, float],\n  distance_meters: float,\n  elevation_gain: float,\n  kom_time: int  // seconds\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/activities/upload",
+          "description": "",
+          "request": "(multipart): { file (GPX/FIT), name, type }",
+          "response": "{ activity_id, status: 'PROCESSING' }"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/activities/{activity_id}",
+          "description": "",
+          "request": "",
+          "response": "{ activity_id, metrics, segment_efforts, map_polyline }"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/segments/{segment_id}/leaderboard",
+          "description": "",
+          "request": "",
+          "response": "{ segment_id, entries: [{ rank, athlete_id, time, date }] }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Activity Processing Pipeline",
+          "approaches": [
+            {
+              "title": "Synchronous Processing",
+              "description": "Process the GPS file synchronously during upload. Return metrics in the upload response. Processing a 1-hour run (3600 GPS points) takes 2-5 seconds. Users wait for the response. If processing fails, the upload fails.",
+              "tradeoff": "Long upload latency; tight coupling between upload and processing.",
+              "isRecommended": false
+            },
+            {
+              "title": "Async Processing with Polling",
+              "description": "Accept upload immediately, process asynchronously. Client polls for status. Better UX but polling adds unnecessary requests. Client must implement polling logic.",
+              "tradeoff": "Polling overhead; client complexity.",
+              "isRecommended": false
+            },
+            {
+              "title": "Async Processing with WebSocket/Push Notification",
+              "description": "Accept upload immediately (202 Accepted). Process asynchronously via Kafka pipeline. Push notification when processing is complete. The pipeline: parse GPS file → compute metrics → match segments → generate map → publish activity. Processing is parallelized: metrics computation and segment matching run concurrently.",
+              "tradeoff": "Push notification requires maintaining connection or device token; processing pipeline adds",
+              "isRecommended": true
+            },
+            {
+              "title": "latency.",
+              "description": "Segment Matching Compare Every Activity Against Every Segment For each new activity, compare its GPS track against all segments. With 1M segments and 10M activities/day, this is 10 trillion comparisons/day — infeasible.",
+              "tradeoff": "O(activities × segments) is infeasible at scale.",
+              "isRecommended": false
+            },
+            {
+              "title": "Geohash-Based Segment Index",
+              "description": "Index segment start/end points by geohash. For each activity, find segments whose start point is within the activity's bounding box. Reduces candidates from 1M to ~100 per activity. But still requires comparing GPS tracks against 100 segments.",
+              "tradeoff": "Still requires track comparison for each candidate segment.",
+              "isRecommended": false
+            },
+            {
+              "title": "Geohash Index + Dynamic Time Warping",
+              "description": "Use geohash index to find candidate segments. Use Dynamic Time Warping (DTW) to match the activity track against each candidate segment. DTW handles GPS noise and slight route variations. Only compute DTW for segments whose start point is within 50 meters of the activity track. Segment matching is parallelized across multiple workers.",
+              "tradeoff": "DTW is O(n×m) per segment; parallelization required for acceptable latency.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Upload Service",
+            "responsibility": "Accepts GPS files; stores in S3; publishes processing job to Kafka"
+          },
+          {
+            "name": "Activity Processor",
+            "responsibility": "Parses GPX/FIT; computes metrics; generates map polyline; publishes to"
+          },
+          {
+            "name": "Segment Matcher",
+            "responsibility": "Finds candidate segments via geohash index; runs DTW matching; records segment efforts"
+          },
+          {
+            "name": "Feed Service",
+            "responsibility": "Serves social feed; fan-out on write for regular athletes; fan-out on read for pros"
+          },
+          {
+            "name": "Leaderboard Service",
+            "responsibility": "Maintains segment leaderboards; updates on new segment efforts"
+          },
+          {
+            "name": "S3",
+            "responsibility": "Stores raw GPS files and processed activity data"
+          },
+          {
+            "name": "PostgreSQL",
+            "responsibility": "Stores activities, segments, segment efforts, athlete profiles"
+          },
+          {
+            "name": "Redis",
+            "responsibility": "Segment geohash index; leaderboard cache; feed cache"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Segment Leaderboards",
+          "content": "Segment leaderboards rank all athletes by their best time on a segment. The leaderboard is stored as a Redis\nsorted set (score = time in seconds, member = athlete_id). When a new segment effort is recorded, the\nleaderboard is updated if the new time is better than the athlete's previous best. The top 10 entries are cached\nin Redis for fast leaderboard queries. Full leaderboards (1000+ entries) are served from PostgreSQL."
+        },
+        {
+          "title": "3. Social Feed",
+          "content": "Strava's social feed uses a hybrid fan-out approach similar to Instagram. Regular athletes (< 10k followers) use\nfan-out on write. Professional athletes (> 10k followers) use fan-out on read. The feed cache stores activity_ids\nper athlete, sorted by start_time. At read time, activity details are fetched from the Activity DB and hydrated with\nathlete profile data."
+        },
+        {
+          "title": "4. Heatmaps",
+          "content": "Strava's global heatmap shows aggregated GPS tracks from all athletes. This is computed by a batch job that\nprocesses all activities, extracts GPS points, and aggregates them into a tile-based heatmap (Mapbox tiles).\nThe heatmap is updated weekly. Privacy zones (areas around athletes' homes) are excluded from the heatmap\nto protect privacy."
+        },
+        {
+          "title": "5. Personal Records",
+          "content": "Strava tracks personal records (PRs) for each athlete: fastest 1km, 5km, 10km, half marathon, marathon. PRs\nare computed by the Activity Processor after each activity. The processor uses a sliding window over the GPS\ntrack to find the fastest sub-track of each target distance. PRs are stored in PostgreSQL and displayed on the\nathlete's profile."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Strava — System Design\nUpload · Process · Match · Feed\nAthlete\nmobile/web\nUpload Svc\nS3\nGPS files\nKafka\nprocess jobs\nActivity Proc\nmetrics+polyline\nSegment Match\nDTW matching\nRedis\nleaderboard+feed\nFeed Svc\nPostgreSQL\nactivities+segs\nupload GPX/FIT\nGET /feed\nstore file\npublish job\nconsume\nmatch segments\nwrite activity\nupdate leaderboard\nread feed cache",
+      "keyFlows": [
+        "① Athlete uploads GPS file → Upload Svc → S3 + Kafka job",
+        "② Activity Processor: parse → compute metrics → encode polyline",
+        "③ Segment Matcher: geohash index → DTW matching → record efforts",
+        "④ Leaderboard updated in Redis sorted set (score = time)",
+        "⑤ Feed Svc: fan-out on write (regular) / read (pro athletes)"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study Dynamic Time Warping (DTW): how it measures similarity between two time series of\ndifferent lengths, the O(n×m) dynamic programming algorithm, and how FastDTW achieves O(n)\napproximation.\nExpert Note: Learn about GPS data formats: GPX (XML-based) and FIT (binary, used by Garmin) formats,\nhow they encode GPS tracks with timestamps and sensor data.\nExpert Note: Understand Google Encoded Polyline format: how it encodes a sequence of lat/lng\ncoordinates as a compact ASCII string using delta encoding and base64.\nExpert Note: Study Mapbox tile architecture: how vector tiles work, how to aggregate GPS points into\ntile-based heatmaps, and how to serve tiles efficiently at different zoom levels.\nExpert Note: Learn about the Haversine formula: how it computes great-circle distance between two GPS\ncoordinates, and when to use the Vincenty formula for higher accuracy."
+    }
+  }
+}

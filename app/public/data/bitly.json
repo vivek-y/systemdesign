@@ -1,0 +1,182 @@
+{
+  "id": "bitly",
+  "name": "Bitly",
+  "overview": "A URL shortener maps long URLs to short 6-8 character aliases and redirects users to the original URL when\nthe short link is accessed. The system must handle extremely high read traffic (redirects) with sub-10ms\nlatency, support custom aliases, track click analytics, and handle link expiration. Write traffic (link creation) is\norders of magnitude lower than read traffic. The system must be globally distributed to minimize redirect latency\nfor users worldwide.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Shorten a long URL to a unique short code (6-8 chars)",
+        "Redirect short URL to original URL with <10ms p99 latency",
+        "Support custom aliases (vanity URLs)",
+        "Track click analytics (count, geo, device, referrer)",
+        "Link expiration (TTL per link)",
+        "Handle 100k URL creations/day, 10B redirects/day"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Handle 100k URL creations/day and 10B redirects/day (~115k redirects/sec)",
+        "Redirect latency <10ms p99 — core user-facing SLA",
+        "99.99% availability for redirects; brief degradation for creation is tolerable",
+        "Read-heavy workload: optimize for redirect throughput over write throughput",
+        "Globally distributed: minimize redirect latency for users worldwide via CDN edge",
+        "Analytics pipeline can tolerate near-real-time delay (seconds to minutes)"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Short Link",
+          "schema": "{\n  short_code: string (6-8 chars, base62),\n  long_url: string,\n  user_id: string (nullable),\n  created_at: timestamp,\n  expires_at: timestamp (nullable),\n  is_custom: boolean,\n\n  click_count: int64\n}"
+        },
+        {
+          "name": "Click Event",
+          "schema": "{\n  short_code: string,\n  timestamp: ISO8601,\n  ip: string,\n  country: string,\n  device_type: enum(MOBILE|DESKTOP|TABLET),\n  referrer: string,\n  user_agent: string\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/shorten",
+          "description": "",
+          "request": "{ long_url, custom_alias?, expires_in_days? }",
+          "response": "{ short_url: 'https://bit.ly/xK9mP2', short_code, expires_at }"
+        },
+        {
+          "method": "GET",
+          "path": "/{short_code}",
+          "description": "Redirect",
+          "request": "",
+          "response": "Location: <long_url>\n  (301 = permanent, cached by browser; 302 = temporary, always hits server)"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/analytics/{short_code}",
+          "description": "",
+          "request": "",
+          "response": "{ short_code, total_clicks, clicks_by_day: [...],\n    top_countries: [...], top_devices: [...] }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Short Code Generation",
+          "approaches": [
+            {
+              "title": "Auto-Increment ID + Base62 Encode",
+              "description": "Use a database auto-increment ID and encode it in base62 (a-z, A-Z, 0-9). Simple but predictable: sequential IDs allow enumeration of all short links. Also creates a single-point bottleneck at the ID generator.",
+              "tradeoff": "Enumerable IDs are a security risk; DB bottleneck at scale.",
+              "isRecommended": false
+            },
+            {
+              "title": "MD5/SHA256 Hash of Long URL",
+              "description": "Hash the long URL and take the first 7 characters of the base62-encoded hash. Deterministic (same URL always gets same code) but collisions require retry logic. Two different users shortening the same URL get the same code — may be desired or not.",
+              "tradeoff": "Hash collisions require retry; same URL always maps to same code (no per-user links).",
+              "isRecommended": false
+            },
+            {
+              "title": "Distributed ID Generator (Snowflake-style) + Base62",
+              "description": "Use a Snowflake-style ID generator (timestamp + machine ID + sequence) to produce unique 64-bit IDs. Encode in base62 to get 7-8 character codes. IDs are unique, non-sequential (with bit shuffling), and generated without DB coordination. Multiple ID generator instances can run in parallel. Custom aliases bypass the generator and are stored directly after uniqueness check.",
+              "tradeoff": "Requires running ID generator service; slight complexity over pure hash approach.",
+              "isRecommended": true
+            },
+            {
+              "title": "Redirect Strategy",
+              "description": "302 Temporary Redirect Always return 302 so every redirect hits the server, enabling accurate click counting. At 10B redirects/day (~115k/sec), even with caching this puts enormous load on origin servers.",
+              "tradeoff": "High origin load; no browser-level caching benefit.",
+              "isRecommended": false
+            },
+            {
+              "title": "301 Permanent Redirect with CDN",
+              "description": "Return 301 so browsers cache the redirect. CDN edge nodes also cache the mapping. Dramatically reduces origin load but click counting becomes inaccurate (cached redirects never hit the server).",
+              "tradeoff": "Click analytics are incomplete; cannot track repeat visits from same browser.",
+              "isRecommended": false
+            },
+            {
+              "title": "302 + CDN Edge Caching + Async Analytics",
+              "description": "Return 302 from CDN edge nodes. The CDN caches the short_code→long_url mapping with a short TTL (60s). Click events are logged at the CDN edge and streamed asynchronously to Kafka for analytics processing. This gives near-301 performance (CDN cache hit rate >99%) while maintaining accurate click counting via edge logs. Cache invalidation on link deletion is handled via CDN purge API.",
+              "tradeoff": "CDN edge logging adds cost; slight analytics delay (near-real-time, not real-time).",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "API Service",
+            "responsibility": "Handles URL creation, validation, custom alias checks; writes to primary"
+          },
+          {
+            "name": "ID Generator",
+            "responsibility": "Snowflake-style distributed ID service; produces unique 64-bit IDs"
+          },
+          {
+            "name": "Redirect Service",
+            "responsibility": "Stateless; looks up short_code in Redis cache, falls back to DB; returns 302"
+          },
+          {
+            "name": "Redis Cache",
+            "responsibility": "Stores short_code→long_url mappings; TTL matches link expiration; ~99% hit rate"
+          },
+          {
+            "name": "PostgreSQL",
+            "responsibility": "Primary store for short links; read replicas for redirect fallback"
+          },
+          {
+            "name": "CDN (CloudFront)",
+            "responsibility": "Caches redirects at edge; logs click events to S3"
+          },
+          {
+            "name": "Kafka",
+            "responsibility": "Streams click events from CDN logs to analytics pipeline"
+          },
+          {
+            "name": "Analytics DB (Druid)",
+            "responsibility": "Stores aggregated click analytics; serves dashboard queries"
+          },
+          {
+            "name": "Cleanup Job",
+            "responsibility": "Deletes expired links from DB and invalidates CDN cache"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Cache Warming and Eviction",
+          "content": "On startup, the redirect service pre-warms Redis with the top 1M most-clicked links (queried from the analytics\nDB). New links are written to Redis immediately on creation. The cache uses an LRU eviction policy with a\n24-hour TTL. For links with explicit expiration, the Redis TTL is set to match the link's expiry time, ensuring\nautomatic cleanup."
+        },
+        {
+          "title": "3. Analytics Pipeline",
+          "content": "CDN access logs are streamed to S3 every minute. A Lambda function triggers on new S3 objects, parses the\nlogs, extracts click events, and publishes them to Kafka. A Flink job consumes Kafka, enriches events with\ngeo-IP lookup (MaxMind database), and writes aggregated counts to Druid. The Druid rollup pre-aggregates by\nhour, reducing storage by 60x compared to raw event storage."
+        },
+        {
+          "title": "4. Handling 10B Redirects/Day",
+          "content": "10B redirects/day = ~115k redirects/sec. With a CDN cache hit rate of 99%, only ~1,150 requests/sec reach the\norigin redirect service. Redis handles these with sub-millisecond latency. The redirect service is stateless and\nhorizontally scalable behind a load balancer. Each Redis node handles ~100k ops/sec, so a 3-node Redis\ncluster provides ample headroom."
+        },
+        {
+          "title": "5. Link Expiration",
+          "content": "Expired links must return 404. Redis TTL handles cache expiration automatically. For DB cleanup, a\nbackground job runs every hour and deletes links where expires_at < NOW(). The CDN cache is invalidated via\nthe CDN purge API when a link is deleted. To prevent serving stale cached redirects, the redirect service\nchecks the link's expiry time on cache miss and returns 410 Gone for expired links."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "URL Shortener (Bitly) — System Design\nCreate · Redirect · Analyze\nClient\nbrowser/app\nCreate API\nRedirect Svc\nID Generator\nSnowflake-style\nPostgreSQL\nshort links\nRedis Cache\ncode→URL\nCDN\nedge cache\nKafka\nclick events\nDruid\nanalytics\nCleanup Job\nexpire links\nPOST /shorten\nGET /{code}\ngen ID\nwrite link\ncache write\ncache lookup\ncache miss\n302 redirect\nclick log\naggregate\nexpire scan",
+      "keyFlows": [
+        "① Create: Client → Create API → ID Generator → PostgreSQL + Redis",
+        "② Redirect: Client → Redirect Svc → Redis (cache hit) → 302",
+        "③ Cache miss: Redirect Svc → PostgreSQL → populate Redis → 302",
+        "④ Analytics: CDN logs → Kafka → Druid aggregation",
+        "⑤ Expiry: Cleanup Job scans PostgreSQL, purges Redis + CDN cache"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study consistent hashing and how it applies to distributing short codes across multiple Redis\nshards — understanding virtual nodes and rebalancing is key for cache scaling.\nExpert Note: Learn about Snowflake ID generation: the 41-bit timestamp, 10-bit machine ID, and 12-bit\nsequence components, and how to handle clock skew across distributed nodes.\nExpert Note: Understand CDN architecture: how edge PoPs cache content, how cache invalidation\npropagates globally, and the trade-off between TTL-based expiry and explicit purge.\nExpert Note: Study base62 encoding: why it's preferred over base64 for URLs (no +, /, = characters), and\nhow to map 64-bit integers to 7-8 character strings.\nExpert Note: Learn about geo-IP databases (MaxMind GeoLite2): how they map IP ranges to countries,\ntheir accuracy limitations, and how to integrate them into a streaming pipeline.\n\nURL Shortener (Bitly)"
+    }
+  }
+}

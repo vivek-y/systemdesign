@@ -1,0 +1,157 @@
+{
+  "id": "online-auction",
+  "name": "Online Auction",
+  "overview": "An online auction system allows sellers to list items for auction and buyers to place bids. The system must\nhandle concurrent bids on the same item (preventing two users from winning the same auction), notify all\nbidders of new bids in real-time, enforce auction end times precisely, and process payments for winning bids.\nThe system must be strongly consistent for bid placement (no two winners) while being highly available for\nbrowsing.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "List items for auction with start/end time and reserve price",
+        "Place bids; highest bid wins at auction end",
+        "Real-time bid updates to all watchers",
+        "Automatic bid extension if bid placed in last 5 minutes",
+        "Proxy bidding (auto-bid up to max amount)"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 1M concurrent auctions with 100k bids/minute",
+        "Strong consistency for bid placement — no two users can win the same auction",
+        "Bid acceptance latency <100ms; real-time bid updates to all watchers <200ms",
+        "99.99% availability for active auctions — downtime during a sale directly loses revenue",
+        "Auction end time enforced precisely; bid extension must trigger within seconds of qualifying bid",
+        "Auction browsing (read path) can tolerate eventual consistency; bid placement (write path) cannot"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Auction",
+          "schema": "{\n  auction_id: UUID,\n  seller_id: string,\n  title: string,\n  description: string,\n  start_price: decimal,\n  reserve_price: decimal,\n  current_price: decimal,\n\n  current_winner_id: string,\n  start_time: timestamp,\n  end_time: timestamp,\n  status: enum(PENDING|ACTIVE|ENDED|CANCELLED)\n}"
+        },
+        {
+          "name": "Bid",
+          "schema": "{\n  bid_id: UUID,\n  auction_id: UUID,\n  bidder_id: string,\n  amount: decimal,\n  bid_time: timestamp,\n  is_proxy: boolean,\n  max_proxy_amount: decimal\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/auctions/{auction_id}/bids",
+          "description": "",
+          "request": "{ bidder_id, amount, max_proxy_amount? }",
+          "response": "{ bid_id, current_price, is_winning: bool }\nResponse 409: { error: 'Bid too low', current_price }\nWebSocket /v1/auctions/{auction_id}/live\nServer pushes: { type: 'NEW_BID', bidder_id, amount, current_price, time_remaining }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Bid Placement Consistency",
+          "approaches": [
+            {
+              "title": "Optimistic Locking",
+              "description": "Read current price, validate new bid > current price, write new bid with version check. Under high concurrency (100 bids/second on a popular auction), many transactions fail and retry. Retry storms can overwhelm the DB.",
+              "tradeoff": "High retry rate under contention; retry storms degrade performance.",
+              "isRecommended": false
+            },
+            {
+              "title": "Database Serializable Transactions",
+              "description": "Use SERIALIZABLE isolation level for bid placement. The DB serializes all concurrent bids. Correct but slow. SERIALIZABLE transactions have high lock contention. At 100 bids/sec on one auction, throughput drops significantly.",
+              "tradeoff": "High lock contention; poor throughput under high bid rates.",
+              "isRecommended": false
+            },
+            {
+              "title": "Redis Lua Script for Atomic Bid",
+              "description": "Use a Redis Lua script to atomically check-and-set the current price. Lua scripts execute atomically in Redis (single-threaded). The script: (1) Check if new bid > current price, (2) If yes, update current price and winner, (3) Return success/failure. This is O(1) and handles 100k bids/sec. Winning bids are asynchronously persisted to PostgreSQL via Kafka. Redis is the source of truth for current price during the auction.",
+              "tradeoff": "Redis is in-memory; if Redis fails, current price is lost (mitigated by Redis persistence + Kafka",
+              "isRecommended": true
+            },
+            {
+              "title": "replay).",
+              "description": "Auction End Processing Cron Job A cron job runs every minute and ends auctions whose end_time has passed. 1-minute granularity is too coarse. Auctions can end up to 1 minute late, which is unfair to bidders.",
+              "tradeoff": "Too coarse; auctions end late; unfair to bidders.",
+              "isRecommended": false
+            },
+            {
+              "title": "Delayed Message Queue",
+              "description": "When an auction is created, schedule a delayed message in Kafka (or a job scheduler) for the auction's end_time. The Auction End Service consumes the message at the exact end_time, finalizes the auction, and triggers payment processing. Bid extension: if a bid is placed in the last 5 minutes, the end_time is extended by 5 minutes and a new delayed message is scheduled.",
+              "tradeoff": "Delayed message scheduling requires a job scheduler; bid extension creates new messages.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Bid Service",
+            "responsibility": "Validates bids; executes Redis Lua script; publishes bid events to Kafka"
+          },
+          {
+            "name": "Redis",
+            "responsibility": "Stores current auction state (current_price, winner_id); Lua scripts for atomic bids"
+          },
+          {
+            "name": "Kafka",
+            "responsibility": "Bid events for persistence and real-time notifications; delayed messages for auction end"
+          },
+          {
+            "name": "Auction DB (PostgreSQL)",
+            "responsibility": "Stores auction definitions and bid history; source of truth after auction ends"
+          },
+          {
+            "name": "Notification Service",
+            "responsibility": "Consumes bid events; pushes real-time updates to watchers via"
+          },
+          {
+            "name": "Auction End Service",
+            "responsibility": "Processes auction end events; finalizes winner; triggers payment"
+          },
+          {
+            "name": "Proxy Bid Engine",
+            "responsibility": "Manages auto-bidding up to user's max amount; places bids on user's behalf"
+          },
+          {
+            "name": "Search Index",
+            "responsibility": "(Elasticsearch) Indexes active auctions for browsing and search"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Proxy Bidding",
+          "content": "Proxy bidding allows users to set a maximum bid amount. The system automatically bids on their behalf up to\nthat amount. When a new bid is placed, the Proxy Bid Engine checks if any proxy bids exist for the auction. If\nthe new bid is below a proxy bidder's maximum, the proxy bidder automatically outbids by the minimum\nincrement. This continues until the proxy bidder's maximum is reached or they win."
+        },
+        {
+          "title": "3. Bid Extension",
+          "content": "To prevent 'sniping' (placing a bid in the last second), auctions are extended by 5 minutes if a bid is placed in\nthe last 5 minutes. The Bid Service checks if the bid was placed within 5 minutes of end_time. If so, it updates\nthe auction's end_time in Redis and PostgreSQL, and schedules a new delayed message for the new\n\nend_time. The old delayed message is ignored (idempotent auction end processing)."
+        },
+        {
+          "title": "4. Real-Time Bid Notifications",
+          "content": "When a bid is placed, the Bid Service publishes a bid event to Kafka. The Notification Service consumes the\nevent and pushes it to all WebSocket connections watching that auction. The WebSocket server uses Redis\npub/sub to fan out the notification to all server instances that have connections for that auction_id. This ensures\nall watchers receive the update within 100ms."
+        },
+        {
+          "title": "5. Auction Search and Discovery",
+          "content": "Active auctions are indexed in Elasticsearch with fields: title, description, category, current_price, end_time,\nseller_rating. Users can search by keyword, filter by category and price range, and sort by end_time (ending\nsoon) or current_price. The search index is updated asynchronously when auctions are created, updated, or\nended."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Online Auction — System Design\nBid · Validate · Notify · End\nUser\nbidder/watcher\nBid API\nRedis\nLua atomic bid\nKafka\nbid events\nNotif Svc\nbid fan-out\nWebSocket GW\npush to watchers\nAuction End Svc\nfinalize winner\nPostgreSQL\nbids + auctions\nProxy Bid Eng\nauto-bid\nPOST /bids\nWS watch\nLua script\npublish bid\nconsume\npush update\nend event\nfinalize\nproxy check",
+      "keyFlows": [
+        "① User places bid → Bid API → Redis Lua script (atomic check-and-set)",
+        "② Bid accepted → publish to Kafka → Notification Svc → WebSocket push",
+        "③ Proxy Bid Engine auto-bids on behalf of proxy bidders",
+        "④ Auction end: delayed Kafka message → Auction End Svc → finalize in PostgreSQL",
+        "⑤ Bid extension: bid in last 5min → extend end_time → reschedule end message"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study Redis Lua scripting: how Lua scripts execute atomically in Redis, the KEYS and ARGV\nconventions, and how to use them for compare-and-swap operations.\nExpert Note: Learn about delayed message queues: how Kafka's timestamp-based retention can be used\nfor delayed processing, and how dedicated job schedulers (Quartz, Sidekiq) handle scheduled tasks.\nExpert Note: Understand proxy bidding algorithms: how to implement the Vickrey auction (second-price)\nmechanism, and how proxy bidding relates to the optimal bidding strategy in English auctions.\nExpert Note: Study WebSocket fan-out patterns: how Redis pub/sub enables fan-out across multiple\nWebSocket server instances, and the trade-off vs. a dedicated message broker.\nExpert Note: Learn about auction sniping and anti-sniping mechanisms: the game theory behind\nlast-second bidding, how bid extension changes bidder behavior, and the impact on auction revenue."
+    }
+  }
+}

@@ -1,0 +1,188 @@
+{
+  "id": "payment-system",
+  "name": "Payment System",
+  "overview": "A payment system processes financial transactions between payers and payees, integrating with banks and\ncard networks. The system must guarantee exactly-once payment processing (no double charges), maintain\nstrong consistency for account balances, handle payment failures and retries safely, support multiple payment\nmethods (cards, bank transfers, wallets), and provide a complete audit trail. Correctness is paramount —\nfinancial errors have legal and reputational consequences.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Process payments between accounts",
+        "Support credit/debit cards, bank transfers, digital wallets",
+        "Exactly-once payment processing (no double charges)",
+        "Payment status tracking and webhooks",
+        "Refunds and chargebacks"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 10k transactions/second with exactly-once processing — no double charges under any failure",
+        "Payment API response latency <500ms; async processing for external provider calls",
+        "99.999% availability — payment downtime has direct financial and reputational impact",
+        "Strong consistency for ledger entries; ACID transactions required for all balance changes",
+        "Idempotency guaranteed for 24 hours per payment_id",
+        "Complete audit trail: every transaction immutably recorded for regulatory compliance"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Payment",
+          "schema": "{\n  payment_id: UUID,  // idempotency key\n  payer_id: string,\n  payee_id: string,\n  amount: decimal,\n  currency: string,\n  method: enum(CARD|BANK_TRANSFER|WALLET),\n  status: enum(PENDING|PROCESSING|COMPLETED|FAILED|REFUNDED),\n  created_at: timestamp,\n  completed_at: timestamp,\n\n  external_ref: string  // bank/card network reference\n}"
+        },
+        {
+          "name": "Account",
+          "schema": "{\n  account_id: string,\n  user_id: string,\n  balance: decimal,\n  currency: string,\n  version: int  // optimistic locking\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/payments",
+          "description": "",
+          "request": "{ payment_id (idempotency key), payer_id, payee_id, amount, currency, method }",
+          "response": "{ payment_id, status: 'PENDING' }\nResponse 200: { payment_id, status }  // if idempotency key already used"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/payments/{payment_id}",
+          "description": "",
+          "request": "",
+          "response": "{ payment_id, status, amount, completed_at, external_ref }"
+        },
+        {
+          "method": "POST",
+          "path": "/v1/payments/{payment_id}/refund",
+          "description": "",
+          "request": "{ amount?, reason }",
+          "response": "{ refund_id, status: 'PENDING' }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Exactly-Once Payment Processing",
+          "approaches": [
+            {
+              "title": "No Idempotency",
+              "description": "Process each API request as a new payment. Network retries cause double charges. A client that retries after a timeout may charge the user twice.",
+              "tradeoff": "Double charges on retry; catastrophic for users.",
+              "isRecommended": false
+            },
+            {
+              "title": "Database Unique Constraint on payment_id",
+              "description": "Store payment_id in a DB with a UNIQUE constraint. Duplicate requests fail with a unique violation. Correct for preventing duplicates but doesn't return the original response for duplicate requests. Client can't distinguish 'new payment' from 'duplicate payment'.",
+              "tradeoff": "Doesn't return original response for duplicates; poor client experience.",
+              "isRecommended": false
+            },
+            {
+              "title": "Idempotency Key with Response Cache",
+              "description": "Store payment_id → response in Redis with 24-hour TTL. On duplicate request, return cached response. The payment processing pipeline uses a distributed lock (Redis SETNX on payment_id) to prevent concurrent processing of the same payment. The lock is released after the payment is committed to the DB. Subsequent requests find the cached response.",
+              "tradeoff": "Redis TTL means idempotency only guaranteed for 24 hours; Redis failure requires fallback.",
+              "isRecommended": true
+            }
+          ]
+        },
+        {
+          "subTopic": "Account Balance Updates",
+          "approaches": [
+            {
+              "title": "Direct Balance Update",
+              "description": "UPDATE accounts SET balance = balance - amount WHERE account_id = payer_id. Race conditions: two concurrent payments can both read the same balance and both succeed, overdrawing the account.",
+              "tradeoff": "Race conditions cause overdrafts; not safe for concurrent payments.",
+              "isRecommended": false
+            },
+            {
+              "title": "Optimistic Locking",
+              "description": "Read balance + version, compute new balance, UPDATE WHERE version = old_version. Retry if version mismatch. Correct but high retry rate under contention. For accounts with many concurrent payments (e.g., a merchant account), retries can cascade.",
+              "tradeoff": "High retry rate for hot accounts; retry storms possible.",
+              "isRecommended": false
+            },
+            {
+              "title": "Double-Entry Bookkeeping with Ledger",
+              "description": "Use double-entry bookkeeping: every payment creates two ledger entries (debit payer, credit payee). Account balance = sum of all ledger entries. Ledger entries are immutable (append-only). No balance updates — only inserts. This eliminates race conditions on balance updates. Balance queries sum ledger entries (cached in Redis). Reconciliation jobs verify balance consistency.",
+              "tradeoff": "Balance queries require summing ledger entries (mitigated by caching); ledger grows",
+              "isRecommended": true
+            },
+            {
+              "title": "indefinitely (mitigated by periodic snapshots).",
+              "description": "",
+              "tradeoff": "",
+              "isRecommended": false
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Payment API",
+            "responsibility": "Validates requests; checks idempotency cache; publishes to Kafka; returns status"
+          },
+          {
+            "name": "Payment Processor",
+            "responsibility": "Consumes Kafka; calls external payment provider (Stripe/Adyen); updates ledger"
+          },
+          {
+            "name": "Ledger DB (PostgreSQL)",
+            "responsibility": "Append-only double-entry ledger; immutable entries; ACID transactions"
+          },
+          {
+            "name": "Idempotency Cache",
+            "responsibility": "(Redis) Stores payment_id → response; 24-hour TTL; prevents duplicate processing"
+          },
+          {
+            "name": "Provider",
+            "responsibility": "Stripe/Adyen for card processing; bank APIs for transfers"
+          },
+          {
+            "name": "Webhook Service",
+            "responsibility": "Sends payment status updates to merchant webhooks; retries on failure"
+          },
+          {
+            "name": "Reconciliation Service",
+            "responsibility": "Daily reconciliation of ledger vs. external provider statements"
+          },
+          {
+            "name": "Fraud Detection",
+            "responsibility": "Rule-based + ML fraud scoring; blocks suspicious payments"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Handling External Provider Failures",
+          "content": "External payment providers (Stripe, Adyen) can fail or return ambiguous responses (timeout without\nconfirmation). The Payment Processor uses an idempotency key when calling the provider. On timeout, it\nretries with the same idempotency key — the provider returns the original result if the payment was already\nprocessed. If the provider is unavailable, the payment is queued for retry with exponential backoff."
+        },
+        {
+          "title": "3. Double-Entry Ledger",
+          "content": "Every payment creates two ledger entries: DEBIT (payer account, amount) and CREDIT (payee account,\namount). The ledger is append-only — entries are never updated or deleted. Account balance = SUM(credits) -\nSUM(debits). This is cached in Redis and updated atomically when new entries are added. The immutable\nledger provides a complete audit trail and makes reconciliation straightforward."
+        },
+        {
+          "title": "4. Reconciliation",
+          "content": "Daily reconciliation compares the internal ledger against external provider statements. Discrepancies\n(payments in the ledger but not in the provider statement, or vice versa) are flagged for manual review.\nCommon causes: network timeouts where the provider processed the payment but the response was lost, or\nprovider errors that weren't properly handled. Reconciliation is critical for financial accuracy."
+        },
+        {
+          "title": "5. PCI DSS Compliance",
+          "content": "Card data (PAN, CVV) must never be stored in the payment system. The Payment API tokenizes card data\nusing the payment provider's tokenization service before any processing. Only the token is stored. The system\nis deployed in a PCI DSS-compliant environment with network segmentation, encryption at rest and in transit,\nand comprehensive audit logging."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Payment System — System Design\nValidate · Process · Ledger · Reconcile\nClient\nmerchant/user\nPayment API\nIdempotency\nRedis cache\nKafka\npayment events\nPayment Proc\nsaga orchestrator\nExt Provider\nStripe/Adyen\nLedger DB\ndouble-entry\nWebhook Svc\nmerchant notify\nReconcile Svc\ndaily audit\nPOST /payments\nidempotency check\npublish\nconsume\ncharge card\nwrite ledger\nstatus event\nreconcile",
+      "keyFlows": [
+        "① Client sends payment → Payment API → check Idempotency Cache (Redis)",
+        "② New payment → Kafka → Payment Processor (saga: debit → charge → credit)",
+        "③ Payment Processor calls External Provider (Stripe) with idempotency key",
+        "④ Success → write double-entry to Ledger DB → notify via Webhook Svc",
+        "⑤ Daily Reconciliation Svc compares Ledger vs. Provider statements"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study the Saga pattern for distributed transactions: the difference between\nchoreography-based and orchestration-based sagas, how compensating transactions work, and how to\nhandle partial failures.\nExpert Note: Learn about double-entry bookkeeping: the accounting equation (Assets = Liabilities +\nEquity), how debits and credits work, and why it's the foundation of all financial systems.\nExpert Note: Understand idempotency in payment systems: how idempotency keys prevent double\ncharges, the difference between idempotency and exactly-once delivery, and how to handle idempotency\nkey expiration.\nExpert Note: Study PCI DSS requirements: the 12 requirements for cardholder data security, the difference\nbetween SAQ levels, and how tokenization reduces PCI scope.\nExpert Note: Learn about payment network protocols: how Visa/Mastercard authorization and settlement\nwork, the role of acquiring banks and issuing banks, and how chargebacks are processed."
+    }
+  }
+}

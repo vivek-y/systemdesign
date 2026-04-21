@@ -1,0 +1,199 @@
+{
+  "id": "dropbox",
+  "name": "Dropbox",
+  "overview": "Dropbox is a cloud file storage and synchronization service that allows users to upload, download, share, and\nsync files across multiple devices. The system must handle large file uploads efficiently (chunking, resumable\nuploads), sync file changes across devices in near-real-time, support file sharing with access control, and scale\nto billions of files. The read/write ratio is roughly 1:1 for sync workloads, with large files (videos, backups)\ndominating storage but small files (documents) dominating operation count.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Upload files up to 5GB with resumable upload support",
+        "Download files with CDN acceleration",
+        "Sync file changes across all user devices within 30 seconds",
+        "Share files/folders with other users (read/write permissions)",
+        "File versioning (last 30 versions)"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 500M users, 1B files, 10PB total storage",
+        "File sync across devices within 30 seconds of a change",
+        "Upload/download throughput optimized for large files; chunk deduplication reduces bandwidth by ~90% for incremental changes",
+        "99.9% availability; data durability is paramount — no file loss",
+        "Eventual consistency for sync notifications; strong consistency for file metadata (version, ownership)",
+        "CDN cache hit rate >99% for downloads; presigned S3 URLs bypass API servers for large transfers"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "File",
+          "schema": "{\n  file_id: UUID,\n  owner_id: string,\n\n  name: string,\n  size: bytes,\n  mime_type: string,\n  s3_key: string,\n  checksum: SHA256,\n  version: int,\n  created_at: timestamp,\n  updated_at: timestamp\n}"
+        },
+        {
+          "name": "Chunk",
+          "schema": "{\n  chunk_id: SHA256 of chunk content,\n  file_id: UUID,\n  chunk_index: int,\n  size: bytes,\n  s3_key: string\n}"
+        },
+        {
+          "name": "SharedFile",
+          "schema": "{\n  share_id: UUID,\n  file_id: UUID,\n  owner_id: string,\n  shared_with_id: string,\n  permission: enum(READ|WRITE),\n  created_at: timestamp\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/files/upload/init",
+          "description": "Initiate chunked upload",
+          "request": "{ filename, size, checksum, chunk_size }",
+          "response": "{ upload_id, chunk_urls: [presigned S3 URLs per chunk] }"
+        },
+        {
+          "method": "PUT",
+          "path": "/v1/files/upload/{upload_id}/complete",
+          "description": "",
+          "request": "{ chunk_etags: [{ chunk_index, etag }] }",
+          "response": "{ file_id, version, s3_key }"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/files/{file_id}/download",
+          "description": "",
+          "request": "",
+          "response": "Location: <CDN signed URL>\n  (or presigned S3 URL for large files)"
+        },
+        {
+          "method": "POST",
+          "path": "/v1/files/{file_id}/share",
+          "description": "",
+          "request": "{ shared_with_email, permission }",
+          "response": "{ share_id, share_link }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "File Upload Strategy",
+          "approaches": [
+            {
+              "title": "Single-Part Upload via API Server",
+              "description": "Client uploads the entire file to the API server, which then writes it to S3. For a 5GB file at 10 Mbps, this takes 67 minutes and ties up an API server thread. Any network interruption requires restarting from scratch.",
+              "tradeoff": "Not resumable; API server becomes bottleneck; poor for large files.",
+              "isRecommended": false
+            },
+            {
+              "title": "Direct S3 Multipart Upload",
+              "description": "Client requests presigned URLs for each chunk from the API server. Client uploads chunks directly to S3 in parallel. Client notifies API server when all chunks are uploaded. S3 handles the storage; API server is only involved in orchestration. Resumable: failed chunks can be retried individually.",
+              "tradeoff": "Client must manage chunk state; S3 multipart upload has 10,000 part limit.",
+              "isRecommended": false
+            },
+            {
+              "title": "Chunked Upload with Deduplication",
+              "description": "Same as direct S3 multipart but with content-addressed deduplication: each chunk is identified by its SHA256 hash. Before uploading, the client sends chunk hashes to the server; the server returns which chunks already exist in S3 (delta sync). For a file where 90% of chunks are unchanged (e.g., appending to a document), only 10% of data is transferred. Chunks are stored once in S3 regardless of how many files reference them.",
+              "tradeoff": "Dedup logic adds client complexity; SHA256 computation adds CPU overhead on client.",
+              "isRecommended": true
+            }
+          ]
+        },
+        {
+          "subTopic": "Sync Mechanism",
+          "approaches": [
+            {
+              "title": "Polling",
+              "description": "Desktop client polls the server every 30 seconds for file changes. 30-second delay is too slow for real-time sync. Polling at 1-second intervals for 500M users = 500M requests/sec — infeasible.",
+              "tradeoff": "High latency or prohibitive server load.",
+              "isRecommended": false
+            },
+            {
+              "title": "Long Polling",
+              "description": "Client holds an open HTTP connection; server responds when there are changes. Reduces unnecessary requests but still requires a connection per device. 500M users × 2 devices = 1B concurrent connections.",
+              "tradeoff": "1B concurrent connections requires enormous connection management infrastructure.",
+              "isRecommended": false
+            },
+            {
+              "title": "Server-Sent Events (SSE) via Notification Service",
+              "description": "File changes publish events to Kafka. A Notification Service consumes Kafka and pushes change notifications to connected devices via SSE. SSE connections are lightweight (HTTP/2 multiplexed). The Notification Service is stateless — it maps user_id to SSE connection via a Redis pub/sub channel. On receiving a notification, the desktop client fetches only the changed chunks (delta sync).",
+              "tradeoff": "SSE requires persistent connections; Redis pub/sub adds a hop; SSE not supported in all",
+              "isRecommended": true
+            },
+            {
+              "title": "environments.",
+              "description": "",
+              "tradeoff": "",
+              "isRecommended": false
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "File Service",
+            "responsibility": "Orchestrates uploads; generates presigned S3 URLs; manages file metadata; handles versioning"
+          },
+          {
+            "name": "S3",
+            "responsibility": "Durable object storage for file chunks; lifecycle policies for old versions"
+          },
+          {
+            "name": "CDN (CloudFront)",
+            "responsibility": "Caches file downloads at edge; signed URLs for access control"
+          },
+          {
+            "name": "Metadata DB (DynamoDB)",
+            "responsibility": "Stores file metadata, chunk manifests, sharing permissions; partition key = owner_id"
+          },
+          {
+            "name": "Redis Cache",
+            "responsibility": "Caches hot file metadata; stores user→file change subscriptions for SSE"
+          },
+          {
+            "name": "Kafka",
+            "responsibility": "Event bus for file change events; drives sync notifications"
+          },
+          {
+            "name": "Notification Service",
+            "responsibility": "Consumes Kafka; pushes SSE notifications to connected desktop/mobile clients"
+          },
+          {
+            "name": "Cleanup Job",
+            "responsibility": "Deletes old file versions beyond retention limit; removes orphaned chunks from S3"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Conflict Resolution",
+          "content": "When two devices modify the same file simultaneously, a conflict occurs. Dropbox's approach: the last write\nwins for the file as a whole, but the losing version is saved as a 'conflicted copy' with the device name and\ntimestamp appended to the filename. This is simpler than operational transforms (used by Google Docs) and\nacceptable for file-level sync where simultaneous edits are rare."
+        },
+        {
+          "title": "3. Storage Deduplication",
+          "content": "Chunk-level deduplication is implemented using content-addressed storage: each chunk's S3 key is its SHA256\nhash. A DynamoDB table maps chunk_hash → s3_key. Before uploading a chunk, the client checks if the hash\nalready exists. If it does, the upload is skipped and the file's chunk manifest simply references the existing S3\nobject. This achieves ~30% storage savings across a typical user base."
+        },
+        {
+          "title": "4. Access Control for Shared Files",
+          "content": "Shared file access is enforced at the CDN layer using signed URLs with embedded permissions. When a user\nrequests a download, the File Service checks the SharedFiles table, verifies the requester has READ\npermission, and generates a CloudFront signed URL valid for 1 hour. The URL includes the file_id and\npermission level as signed parameters that CloudFront validates."
+        },
+        {
+          "title": "5. Versioning",
+          "content": "Each file write creates a new version record in DynamoDB. The version table stores: file_id, version_number,\ns3_key, size, checksum, created_at. The latest version is denormalized into the main file record for fast access.\nOld versions beyond the retention limit (30 versions) are deleted by a background job that also removes the\ncorresponding S3 objects (if no other version references the same chunks)."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Dropbox — System Design\nUpload  ·  Download  ·  Share  ·  Sync\nClient\nDesktop\n(sync agent)\nAPI Gateway\nFile Service\npresigned URLs\nS3\nCDN\nMetadata DB\n(DynamoDB)\nRedis Cache\nuserId→fileIds\nKafka / SQS\nChangeEvents\nNotification Svc\nWebSocket · SSE\nCleanup Job\nstale uploads\nChunking\n5–10 MB parts\nSharedFiles\nuserId PK + fileId SK\npresigned URL\nPUT direct (multipart)\nS3 event notify\nmultipart parts\nS3 notifications\nread / write\ncache shared files\nS3 notifications\nfan-out\nlifecycle events\nSSE / WebSocket\nWebSocket push\nGET download\nsigned URL",
+      "keyFlows": [
+        "① Upload: Client → Gateway → File Svc → presigned URL → PUT to S3",
+        "② S3 event → File Svc updates metadata (status = uploaded)",
+        "③ Download: Gateway → CDN signed URL → edge cache (or S3 origin)",
+        "④ Sync: S3 event → Kafka → Notif Svc → WebSocket push to devices",
+        "⑤ Share: File Svc writes SharedFiles table (userId PK + fileId SK)"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study S3 multipart upload in depth: the 5MB minimum part size, the 10,000 part limit, how\nETags are used for integrity verification, and the lifecycle of an incomplete multipart upload.\nExpert Note: Learn about content-addressed storage (CAS): how Git uses SHA1 hashes as object\nidentifiers, and how Dropbox's chunk deduplication is essentially a CAS system.\nExpert Note: Understand Rabin fingerprinting for variable-size chunking: how it uses a rolling hash to find\ncontent-dependent chunk boundaries, maximizing deduplication across file versions.\nExpert Note: Study CloudFront signed URLs and signed cookies: how they embed expiry time and IP\nrestrictions, and how the private key signing process works.\nExpert Note: Learn about the CAP theorem implications for file sync: why Dropbox chose availability over\nconsistency (last-write-wins with conflicted copies) rather than implementing distributed transactions."
+    }
+  }
+}

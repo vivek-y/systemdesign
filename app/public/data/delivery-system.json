@@ -1,0 +1,190 @@
+{
+  "id": "delivery-system",
+  "name": "Delivery System",
+  "overview": "A delivery system connects customers placing orders with couriers who fulfill them. The system must match\norders to available couriers in real time, track courier locations continuously, provide live order status updates to\ncustomers, and optimize routing to minimize delivery time. The system handles high concurrency during peak\nhours (lunch/dinner rushes), must be fault-tolerant to courier disconnections, and needs to handle geographic\ndistribution across many cities.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Place and track delivery orders",
+        "Real-time courier location tracking (every 5 seconds)",
+        "Automatic order-to-courier matching within 30 seconds",
+        "Live order status updates pushed to customer",
+        "ETA calculation and updates"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 1M concurrent orders and 500k active couriers",
+        "Courier location update latency <100ms end-to-end",
+        "Order-to-courier matching within 30 seconds",
+        "99.9% availability; peak-hour traffic spikes (lunch/dinner) must not degrade matching",
+        "Eventual consistency for courier locations; strong consistency for order assignment (no double-assignment)",
+        "ETA recalculation every 30 seconds with <200ms computation latency"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Order",
+          "schema": "{\n  order_id: UUID,\n  customer_id: string,\n  merchant_id: string,\n\n  courier_id: string (nullable),\n  status: enum(PLACED|MATCHED|PICKED_UP|IN_TRANSIT|DELIVERED|CANCELLED),\n  pickup_location: {lat, lng},\n  dropoff_location: {lat, lng},\n  placed_at: timestamp,\n  estimated_delivery: timestamp\n}"
+        },
+        {
+          "name": "Courier",
+          "schema": "{\n  courier_id: string,\n  status: enum(AVAILABLE|BUSY|OFFLINE),\n  current_location: {lat, lng},\n  last_seen: timestamp,\n  active_order_id: string (nullable)\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/orders",
+          "description": "Place order",
+          "request": "{ customer_id, merchant_id, pickup_location, dropoff_location, items }",
+          "response": "{ order_id, status: 'PLACED', estimated_delivery }"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/orders/{order_id}/status",
+          "description": "",
+          "request": "",
+          "response": "{ order_id, status, courier_location: {lat,lng}, eta_minutes }\nWebSocket /v1/orders/{order_id}/live\nServer pushes: { type: 'STATUS_UPDATE', status, courier_location, eta_minutes }"
+        },
+        {
+          "method": "POST",
+          "path": "/v1/couriers/{courier_id}/location",
+          "description": "Courier heartbeat",
+          "request": "{ lat, lng, timestamp }",
+          "response": "{ next_order_id? }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Courier Location Storage",
+          "approaches": [
+            {
+              "title": "PostgreSQL with PostGIS",
+              "description": "Store courier locations in a PostgreSQL table with PostGIS geometry columns. PostGIS supports geospatial queries (find couriers within radius) but at 500k couriers updating every 5 seconds = 100k writes/sec, PostgreSQL cannot sustain this write load.",
+              "tradeoff": "Write throughput too high for relational DB; PostGIS queries slow at scale.",
+              "isRecommended": false
+            },
+            {
+              "title": "Redis Geospatial (GEOADD/GEORADIUS)",
+              "description": "Use Redis GEOADD to store courier locations as geospatial members. GEORADIUS queries find all couriers within a given radius in O(N+log(M)) time. Redis handles 100k writes/sec easily. Data is in-memory so reads are sub-millisecond. Persistence via Redis AOF/RDB for recovery after restart.",
+              "tradeoff": "Redis memory cost for 500k couriers; single Redis instance is a bottleneck.",
+              "isRecommended": false
+            },
+            {
+              "title": "Redis Geo + Geohash Sharding",
+              "description": "Shard Redis by geohash prefix (first 4 characters = ~40km cells). Each shard handles a geographic region. Courier location updates go to the shard for their current geohash. Matching queries fan out to nearby geohash shards. Location history is written asynchronously to Cassandra for analytics and dispute resolution.",
+              "tradeoff": "Cross-shard queries for couriers near cell boundaries require fan-out; slight complexity.",
+              "isRecommended": true
+            }
+          ]
+        },
+        {
+          "subTopic": "Order-Courier Matching",
+          "approaches": [
+            {
+              "title": "Polling-Based Matching",
+              "description": "A cron job runs every 10 seconds, queries unmatched orders, finds nearby available couriers, and assigns the closest one. Simple but 10-second polling delay is unacceptable. Race conditions when multiple orders compete for the same courier.",
+              "tradeoff": "High latency; race conditions; not scalable.",
+              "isRecommended": false
+            },
+            {
+              "title": "Event-Driven Matching Service",
+              "description": "When an order is placed, publish an event to Kafka. A matching service consumes the event, queries Redis for nearby couriers, and assigns the best match using a scoring function (distance + courier rating). Optimistic locking on courier status prevents double-assignment.",
+              "tradeoff": "Matching service can become a bottleneck; requires careful concurrency control.",
+              "isRecommended": false
+            },
+            {
+              "title": "Matching Service with Distributed Lock",
+              "description": "Same event-driven approach but courier assignment uses a Redis distributed lock (SETNX with TTL) to prevent race conditions. If no courier is found within 30 seconds, the order is re-queued with an expanded search radius. Matching score = 0.6 × (1/distance) + 0.3 × courier_rating + 0.1 × (1/active_orders).",
+              "tradeoff": "Redis lock adds latency; lock TTL must be tuned carefully to avoid deadlocks.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Order Service",
+            "responsibility": "Creates orders, validates, publishes to Kafka; manages order state machine"
+          },
+          {
+            "name": "Courier Service",
+            "responsibility": "Receives location heartbeats; updates Redis geo index; manages courier status"
+          },
+          {
+            "name": "Matching Service",
+            "responsibility": "Consumes order events from Kafka; queries Redis for nearby couriers; assigns with distributed lock"
+          },
+          {
+            "name": "Tracking Service",
+            "responsibility": "Aggregates courier location updates; pushes live updates to customers via WebSocket"
+          },
+          {
+            "name": "WebSocket Gateway",
+            "responsibility": "Maintains persistent connections with customers; receives push notifications from Tracking Service"
+          },
+          {
+            "name": "Redis Geo",
+            "responsibility": "Stores courier locations sharded by geohash; supports radius queries"
+          },
+          {
+            "name": "Kafka",
+            "responsibility": "Event bus for order lifecycle events and location updates"
+          },
+          {
+            "name": "PostgreSQL",
+            "responsibility": "Persistent store for orders, couriers, and assignment history"
+          },
+          {
+            "name": "Cassandra",
+            "responsibility": "Time-series store for courier location history and analytics"
+          },
+          {
+            "name": "ETA Service",
+            "responsibility": "Computes delivery ETAs using road network graph (OSRM/Google Maps"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. WebSocket Connection Management",
+          "content": "1M concurrent orders means up to 1M WebSocket connections. WebSocket gateways are stateful — each\ngateway maintains a map of order_id → connection. When the Tracking Service has a location update, it\npublishes to a Kafka topic partitioned by order_id. Each WebSocket gateway subscribes to the partitions for its\nassigned orders. This ensures each update is delivered to exactly one gateway, which then pushes to the\ncustomer."
+        },
+        {
+          "title": "3. ETA Calculation",
+          "content": "ETA = time_to_pickup + pickup_dwell_time + time_to_dropoff. Time calculations use OSRM (Open Source\nRouting Machine) with a pre-loaded road network graph. OSRM computes driving time between two\ncoordinates in <10ms. ETAs are recalculated every 30 seconds as the courier moves and traffic conditions\nchange. For cities without OSRM coverage, we fall back to straight-line distance × 1.4 (empirical detour factor)\n÷ average_speed."
+        },
+        {
+          "title": "4. Handling Courier Disconnections",
+          "content": "If a courier's last_seen timestamp is >60 seconds old, the system marks them as OFFLINE and re-queues their\nactive order for re-matching. A dead-letter queue in Kafka holds orders that have failed matching 3 times,\ntriggering an alert for manual intervention. Couriers reconnecting within 5 minutes can reclaim their active order\nif it hasn't been re-matched."
+        },
+        {
+          "title": "5. Geographic Sharding",
+          "content": "The system is deployed per city/region. Each city has its own Redis cluster, Kafka cluster, and matching service\ninstances. A global routing layer (based on customer/courier IP geolocation) directs traffic to the correct\nregional deployment. Cross-city orders (rare) are handled by a global matching service that queries multiple\nregional Redis clusters."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Delivery System — System Design\nOrder · Match · Track · Deliver\nCustomer\nmobile/web\nCourier\nmobile app\nOrder API\nCourier Svc\nKafka\nevent bus\nMatching Svc\nassign courier\nTracking Svc\nlocation agg\nRedis Geo\ngeohash shards\nPostgreSQL\norders/couriers\nWebSocket GW\npush to customer\nETA Service\nOSRM routing\nplace order\nlocation hb\norder event\nGEOADD\nloc event\nconsume order\nconsume loc\nGEORADIUS\nassign order\npush update\nWebSocket push\ncalc ETA",
+      "keyFlows": [
+        "① Customer places order → Order API → Kafka → Matching Service",
+        "② Matching: GEORADIUS on Redis Geo → assign courier (Redis lock)",
+        "③ Courier sends location every 5s → Courier Svc → Redis Geo",
+        "④ Tracking Svc aggregates locations → WebSocket GW → Customer push",
+        "⑤ ETA Service recalculates every 30s using OSRM routing"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study geohash encoding: how it maps 2D coordinates to a 1D string, the precision levels\n(1-12 characters), and how neighboring cells share geohash prefixes for efficient proximity queries.\nExpert Note: Learn about WebSocket scaling patterns: sticky sessions vs. pub/sub fan-out, how to handle\nconnection state across multiple gateway instances, and graceful reconnection with exponential backoff.\nExpert Note: Understand distributed locking with Redis: the SETNX + EXPIRE pattern, the Redlock\nalgorithm for multi-node safety, and why lock TTL must exceed the critical section duration.\nExpert Note: Study OSRM (Open Source Routing Machine): how it pre-processes OpenStreetMap data\ninto a contraction hierarchy, enabling sub-millisecond shortest-path queries.\nExpert Note: Learn about the CAP theorem trade-offs in location tracking: why eventual consistency is\nacceptable for courier positions but strong consistency is required for order assignment."
+    }
+  }
+}

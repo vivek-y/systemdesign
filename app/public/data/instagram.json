@@ -1,0 +1,182 @@
+{
+  "id": "instagram",
+  "name": "Instagram",
+  "overview": "Instagram is a photo and video sharing social network where users post media, follow other users, and browse\na personalized feed. The system must handle massive media upload and delivery (billions of photos/videos),\ngenerate personalized feeds for 1B+ users, support real-time notifications, and serve content globally with low\nlatency. Media delivery is the dominant workload — reads vastly outnumber writes.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Upload photos and videos (up to 4K resolution, 60 seconds)",
+        "Follow/unfollow users",
+        "Personalized home feed (posts from followed users)",
+        "Like and comment on posts",
+        "Explore page (trending/recommended content)",
+        "Push notifications for likes, comments, follows"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 1B+ users with read-heavy workload (reads vastly outnumber writes)",
+        "Feed load latency <200ms p99",
+        "Media upload pipeline: 360p version available within minutes of upload",
+        "99.9% availability; brief feed staleness is acceptable over downtime",
+        "Eventual consistency for feed and like counts; strong consistency not required",
+        "CDN cache hit rate >99% for media delivery; horizontally scalable fan-out"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Post",
+          "schema": "{\n  post_id: UUID,\n  user_id: string,\n  media_url: string,\n  thumbnail_url: string,\n  caption: string,\n  location: string,\n  created_at: timestamp,\n  like_count: int,\n  comment_count: int\n\n}"
+        },
+        {
+          "name": "Follow",
+          "schema": "{\n  follower_id: string,\n  followee_id: string,\n  created_at: timestamp\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/posts",
+          "description": "Upload post",
+          "request": "(multipart): { media_file, caption, location? }",
+          "response": "{ post_id, media_url, thumbnail_url }"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/feed",
+          "description": "",
+          "request": "",
+          "response": "{ posts: [...], next_cursor }"
+        },
+        {
+          "method": "POST",
+          "path": "/v1/posts/{post_id}/like",
+          "description": "",
+          "request": "",
+          "response": "{ post_id, like_count }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Media Storage and Delivery",
+          "approaches": [
+            {
+              "title": "Store Media on App Servers",
+              "description": "Upload media to app server disk; serve directly from app servers. App servers are not designed for large file storage. Disk fills up quickly; no redundancy; poor global performance.",
+              "tradeoff": "Not scalable; no redundancy; poor global latency.",
+              "isRecommended": false
+            },
+            {
+              "title": "S3 + CloudFront CDN",
+              "description": "Upload media to S3; serve via CloudFront CDN with global edge locations. CDN caches popular content at edge nodes, reducing S3 origin load. Presigned URLs for direct client-to-S3 uploads bypass the app server.",
+              "tradeoff": "CDN cache misses for long-tail content still hit S3; no adaptive bitrate for video.",
+              "isRecommended": false
+            },
+            {
+              "title": "S3 + CDN + Media Processing Pipeline",
+              "description": "Client uploads original media to S3 via presigned URL. A media processing pipeline (triggered by S3 event) transcodes video to multiple resolutions (360p, 720p, 1080p), generates thumbnails, and applies filters. Processed media is stored back in S3 and served via CDN. The CDN uses adaptive bitrate streaming (HLS) for video. Popular posts are pre-warmed in CDN edge caches. Long-tail content is served from S3 origin.",
+              "tradeoff": "Media processing pipeline adds latency before post is visible; transcoding is",
+              "isRecommended": true
+            },
+            {
+              "title": "compute-intensive.",
+              "description": "Feed Generation Fan-out on Read Query all followed users' posts at read time, merge, and rank. For a user following 1,000 accounts, this requires 1,000 DB queries. At 1B DAU, this is computationally infeasible.",
+              "tradeoff": "Too slow; high read amplification.",
+              "isRecommended": false
+            },
+            {
+              "title": "Hybrid Fan-out (same as Facebook News Feed)",
+              "description": "Regular users: fan-out on write (push post_ids to followers' feed caches). Celebrity users (>100k followers): fan-out on read (merge at query time). Feed cache stores ranked post_ids in Redis. Post details fetched from Post Cache on read.",
+              "tradeoff": "Celebrity threshold requires tuning; merge step adds latency for users following many",
+              "isRecommended": true
+            },
+            {
+              "title": "celebrities.",
+              "description": "",
+              "tradeoff": "",
+              "isRecommended": false
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Upload Service",
+            "responsibility": "Generates presigned S3 URLs; triggers media processing pipeline on upload completion"
+          },
+          {
+            "name": "Media Processing",
+            "responsibility": "Transcodes video; generates thumbnails; stores processed media in S3"
+          },
+          {
+            "name": "CDN (CloudFront)",
+            "responsibility": "Serves media globally; adaptive bitrate for video; edge caching"
+          },
+          {
+            "name": "Post Service",
+            "responsibility": "Creates post records; triggers fan-out via Kafka"
+          },
+          {
+            "name": "Feed Service",
+            "responsibility": "Serves personalized feed; reads from Redis feed cache; merges celebrity posts"
+          },
+          {
+            "name": "Social Graph",
+            "responsibility": "Stores follow relationships; used for fan-out target list"
+          },
+          {
+            "name": "Notification Service",
+            "responsibility": "Sends push notifications for likes, comments, follows via APNs/FCM"
+          },
+          {
+            "name": "Like/Comment Service",
+            "responsibility": "Handles likes and comments; updates counters in Redis; persists to"
+          },
+          {
+            "name": "Explore Service",
+            "responsibility": "Generates trending/recommended content using engagement signals"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Like Counter Accuracy",
+          "content": "Like counts are displayed on every post and must be approximately accurate (exact counts are not required).\nThe Like Service increments a Redis counter on each like (INCR post:{post_id}:likes). Redis counters are\nperiodically flushed to Cassandra (every 60 seconds). For very popular posts (>1M likes), the counter is\nsharded across multiple Redis keys and summed at read time to avoid hot key issues."
+        },
+        {
+          "title": "3. Explore Page",
+          "content": "The Explore page shows trending and personalized content. Trending content is computed by a batch job that\nruns every 15 minutes, scoring posts by engagement velocity (likes/hour). Personalized recommendations use\na collaborative filtering model trained on user engagement history. The Explore Service pre-computes explore\nfeeds for all active users daily and stores them in Redis."
+        },
+        {
+          "title": "4. Push Notifications",
+          "content": "The Notification Service receives events from Kafka (likes, comments, follows) and sends push notifications via\nAPNs (iOS) and FCM (Android). Notifications are batched: if a post receives 100 likes in 1 minute, the user\nreceives one notification ('100 people liked your post') rather than 100 individual notifications. Notification\npreferences are stored per user and respected."
+        },
+        {
+          "title": "5. Global Distribution",
+          "content": "Instagram serves users globally. Media is stored in a primary S3 region (us-east-1) and replicated to regional\nS3 buckets (eu-west-1, ap-southeast-1) for popular content. CDN edge nodes serve media from the nearest\nregional bucket. User data (posts, follows, likes) is stored in a primary region with read replicas in other regions.\n\nFeed generation uses the nearest read replica."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Instagram — System Design\nUpload · Feed · Like · Notify\nClient\niOS/Android\nUpload Svc\nFeed Svc\nMedia Proc\ntranscode+thumb\nS3\nCDN\nKafka\npost events\nFan-out Svc\npush to feeds\nRedis Cache\nfeed + counters\nNotif Svc\nAPNs / FCM\nupload media\nGET /feed\nprocess job\nstore media\nserve via CDN\npost event\nfan-out\nwrite feed cache\nread feed\nlike/comment events\npush notif",
+      "keyFlows": [
+        "① Upload: Client → Upload Svc → presigned S3 URL → Media Processing",
+        "② Media Processing: transcode → store in S3 → serve via CDN",
+        "③ Post event → Kafka → Fan-out Svc → Redis Feed Cache",
+        "④ GET /feed → Feed Svc → Redis Cache → hydrate post details",
+        "⑤ Like/comment events → Kafka → Notification Svc → APNs/FCM"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study HLS (HTTP Live Streaming): how video is segmented into small chunks, how the\nmanifest file (.m3u8) describes available quality levels, and how adaptive bitrate switching works.\nExpert Note: Learn about Instagram's Cassandra usage: how they shard the social graph, the data model\nfor the feed (user_id as partition key, post_id as clustering key), and their migration from PostgreSQL.\nExpert Note: Understand image processing pipelines: how FFmpeg handles video transcoding, the\ntrade-off between encoding quality (CRF) and file size, and how to parallelize transcoding jobs.\nExpert Note: Study the Explore page recommendation system: how collaborative filtering works, the role of\nitem-item vs. user-user similarity, and how to serve recommendations at low latency.\nExpert Note: Learn about APNs and FCM push notification delivery: how device tokens work, the difference\nbetween high-priority and normal-priority notifications, and how to handle token expiration."
+    }
+  }
+}

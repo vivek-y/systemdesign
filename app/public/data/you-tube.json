@@ -1,0 +1,188 @@
+{
+  "id": "you-tube",
+  "name": "YouTube",
+  "overview": "YouTube is the world's largest video platform, hosting billions of videos and serving billions of views per day.\nThe system must handle massive video uploads (500 hours of video uploaded per minute), transcode videos to\nmultiple formats and resolutions, serve video streams globally with low latency, support search across billions of\nvideos, and provide personalized recommendations. Video delivery is the dominant workload, requiring a\nglobally distributed CDN.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Upload videos up to 12 hours / 256GB",
+        "Transcode to multiple resolutions (360p to 4K) and formats (MP4, WebM)",
+        "Stream video with adaptive bitrate",
+        "Search videos by title, description, and tags",
+        "Personalized video recommendations"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 2B users; 500 hours of video uploaded per minute; 1B hours watched per day",
+        "Video start time <2 seconds; 360p version available within 5 minutes of upload",
+        "99.99% availability for video streaming — outages affect hundreds of millions of users",
+        "CDN cache hit rate >99%; adaptive bitrate must gracefully degrade on poor networks",
+        "Search query latency <500ms; recommendations served in <200ms from pre-computed cache",
+        "Transcoding pipeline scales horizontally with GPU workers; parallel encoding per quality level"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Video",
+          "schema": "{\n  video_id: string,  // 11-char base64 ID\n  channel_id: string,\n  title: string,\n  description: string,\n  tags: [string],\n\n  duration_seconds: int,\n  view_count: int,\n  like_count: int,\n  status: enum(UPLOADING|PROCESSING|PUBLISHED|PRIVATE|DELETED),\n  uploaded_at: timestamp,\n  published_at: timestamp\n}"
+        },
+        {
+          "name": "VideoChunk",
+          "schema": "{\n  video_id: string,\n  quality: enum(360P|480P|720P|1080P|1440P|4K),\n  format: enum(MP4|WEBM),\n  chunk_index: int,\n  duration_seconds: float,\n  gcs_uri: string  // Google Cloud Storage\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/videos/upload",
+          "description": "Resumable upload",
+          "request": "{ title, description, tags, file_size }",
+          "response": "{ video_id, upload_url }  // resumable upload URL"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/videos/{video_id}/stream",
+          "description": "",
+          "request": "",
+          "response": "Location: <CDN manifest URL>\n  (HLS .m3u8 or DASH .mpd manifest)"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/search",
+          "description": "",
+          "request": "",
+          "response": "{ videos: [{ video_id, title, channel, duration, view_count, thumbnail }] }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Video Upload and Processing",
+          "approaches": [
+            {
+              "title": "Single-Server Upload and Transcode",
+              "description": "Upload video to a single server; transcode synchronously. A 1-hour 4K video is 50GB. Uploading to a single server takes hours. Transcoding to 6 quality levels takes 6+ hours. Completely infeasible.",
+              "tradeoff": "Not scalable; single server cannot handle upload volume.",
+              "isRecommended": false
+            },
+            {
+              "title": "Distributed Upload + Sequential Transcoding",
+              "description": "Resumable upload to GCS. Sequential transcoding pipeline. Resumable upload handles large files. But sequential transcoding (360p → 480p → 720p → ...) takes too long. A 1-hour video takes 6 hours to fully process.",
+              "tradeoff": "Sequential transcoding too slow; video not available for hours after upload.",
+              "isRecommended": false
+            },
+            {
+              "title": "Resumable Upload + Parallel Transcoding Pipeline",
+              "description": "Resumable upload to GCS via signed URLs. On upload completion, a transcoding pipeline splits the video into 2-minute segments and transcodes each segment to all quality levels in parallel. 360p version is available within 5 minutes of upload. Higher quality versions follow as transcoding completes. Transcoding workers use GPU instances for hardware-accelerated encoding.",
+              "tradeoff": "GPU instances are expensive; parallel transcoding requires complex job orchestration.",
+              "isRecommended": true
+            }
+          ]
+        },
+        {
+          "subTopic": "Video Search",
+          "approaches": [
+            {
+              "title": "MySQL FULLTEXT",
+              "description": "Full-text search on video title and description in MySQL. Doesn't scale to billions of videos. No semantic understanding. Poor ranking.",
+              "tradeoff": "Doesn't scale; poor ranking quality.",
+              "isRecommended": false
+            },
+            {
+              "title": "Elasticsearch",
+              "description": "Index video metadata in Elasticsearch. BM25 ranking for text relevance. Scales to billions of videos. But doesn't capture semantic meaning (searching 'funny cat videos' doesn't match 'hilarious kitten clips').",
+              "tradeoff": "No semantic understanding; keyword-only matching.",
+              "isRecommended": false
+            },
+            {
+              "title": "Elasticsearch + Semantic Embeddings",
+              "description": "Elasticsearch for keyword search. A separate semantic search index (using video title/description embeddings from a language model) for semantic matching. Results from both indexes are merged and re-ranked using a learned ranking model (watch time, CTR, freshness). Video embeddings are pre-computed offline and stored in a vector database (Faiss).",
+              "tradeoff": "Vector database adds complexity; embedding computation is expensive; requires recomputing",
+              "isRecommended": true
+            },
+            {
+              "title": "on video updates.",
+              "description": "",
+              "tradeoff": "",
+              "isRecommended": false
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Upload Service",
+            "responsibility": "Handles resumable uploads; generates signed GCS URLs; triggers transcoding pipeline"
+          },
+          {
+            "name": "Transcoding Pipeline",
+            "responsibility": "Splits video into segments; dispatches parallel transcoding jobs; assembles HLS/DASH manifests"
+          },
+          {
+            "name": "Storage)",
+            "responsibility": "Stores raw uploads and transcoded video chunks"
+          },
+          {
+            "name": "CDN (Google CDN)",
+            "responsibility": "Serves video chunks globally; adaptive bitrate streaming"
+          },
+          {
+            "name": "Video Metadata DB",
+            "responsibility": "(Spanner) Stores video metadata; globally consistent; horizontally scalable"
+          },
+          {
+            "name": "Search Index",
+            "responsibility": "(Elasticsearch)"
+          },
+          {
+            "name": "Recommendation Service",
+            "responsibility": "Personalized video recommendations using two-tower model"
+          },
+          {
+            "name": "View Counter (Redis)",
+            "responsibility": "Approximate view counts using Redis INCR; periodically flushed to"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Transcoding Pipeline",
+          "content": "The transcoding pipeline uses a DAG (Directed Acyclic Graph) of jobs: (1) Split video into 2-minute segments,\n(2) For each segment, transcode to 6 quality levels in parallel (GPU workers), (3) Assemble HLS/DASH\nmanifests from transcoded segments. The pipeline is orchestrated by a workflow engine (Apache Airflow or\nGoogle Cloud Workflows). The 360p version is prioritized so the video is watchable quickly."
+        },
+        {
+          "title": "3. View Count Accuracy",
+          "content": "YouTube displays approximate view counts (rounded to significant figures). View counts are incremented in\nRedis (INCR video:{video_id}:views) on each view. Redis counters are flushed to Spanner every 60 seconds.\nFor viral videos (millions of views/hour), the Redis counter is sharded across multiple keys and summed at read\ntime. The displayed count is intentionally delayed by a few hours to prevent gaming."
+        },
+        {
+          "title": "4. Recommendation System",
+          "content": "YouTube's recommendation system uses a two-stage approach: (1) Candidate generation: a two-tower neural\nnetwork retrieves hundreds of candidate videos from billions using approximate nearest neighbor search, (2)\nRanking: a deep neural network scores each candidate using hundreds of features (watch history, video\nmetadata, user context). The ranking model is trained to maximize watch time, not just clicks."
+        },
+        {
+          "title": "5. Copyright Detection (Content ID)",
+          "content": "YouTube's Content ID system detects copyrighted content in uploaded videos. When a video is uploaded, it's\ncompared against a database of reference fingerprints (audio and video fingerprints from rights holders).\nMatching is done using perceptual hashing: the video's audio and video are fingerprinted and compared against\nthe reference database. Matches trigger the rights holder's policy (monetize, block, or track)."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "YouTube — System Design\nUpload · Transcode · Stream · Recommend\nClient\nbrowser/app\nUpload Svc\nSearch/Rec\nGCS\nraw+chunks\nTranscode\nparallel GPU\nCDN\nglobal edge\nElasticsearch\nvideo search\nRec Svc\ntwo-tower model\nSpanner\nvideo metadata\nupload video\nsearch/recs\nstore raw\ntrigger transcode\nstore chunks\norigin\nstream HLS\nupdate metadata\nsync to ES\nget recs",
+      "keyFlows": [
+        "① Upload: Client → Upload Svc → GCS (resumable) → trigger Transcode",
+        "② Transcode: split into 2-min segments → parallel GPU encode → HLS manifest",
+        "③ Stream: Client → CDN (adaptive bitrate HLS) → GCS origin on miss",
+        "④ Search: Elasticsearch (BM25) + Faiss (semantic embeddings) → re-rank",
+        "⑤ Recommendations: two-tower model (candidate gen + ranking) → Redis cache"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study YouTube's two-stage recommendation system: the candidate generation model (matrix\nfactorization + deep learning), the ranking model (wide & deep learning), and how they're served at scale.\nExpert Note: Learn about video transcoding: the H.264 and H.265 codecs, the trade-off between encoding\nquality (CRF) and file size, and how GPU-accelerated encoding (NVENC) works.\nExpert Note: Understand HLS and DASH adaptive bitrate streaming: how manifests describe quality\nvariants, how the ABR algorithm selects quality levels, and how segment duration affects startup latency.\nExpert Note: Study perceptual hashing for content fingerprinting: how audio fingerprinting (Chromaprint)\nand video fingerprinting work, and how YouTube's Content ID matches fingerprints at scale.\nExpert Note: Learn about Google Spanner: how it achieves global consistency using TrueTime, how it\nscales horizontally while maintaining ACID transactions, and when to use it vs. Bigtable."
+    }
+  }
+}

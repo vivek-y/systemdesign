@@ -1,0 +1,160 @@
+{
+  "id": "tinder",
+  "name": "Tinder",
+  "overview": "Tinder is a location-based dating app where users swipe right (like) or left (pass) on profiles. When two users\nboth swipe right, it's a match and they can chat. The system must serve a personalized deck of nearby profiles,\nprocess swipes in real-time, detect mutual matches instantly, and support messaging between matched users.\nThe recommendation system must balance proximity, user preferences, and engagement signals.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Serve a deck of nearby profiles to swipe on",
+        "Process swipes (like/pass) in real-time",
+        "Detect mutual matches and notify both users",
+        "In-app messaging between matched users",
+        "Location-based discovery (configurable radius)"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 50M DAU processing 1B swipes/day (~11.5k swipes/sec)",
+        "Profile deck served in <200ms; swipe processing <100ms",
+        "Match detection must be correct — false matches or missed matches are unacceptable",
+        "99.9% availability; brief deck staleness (12-hour refresh) is acceptable",
+        "Eventual consistency for deck freshness; strong consistency for match creation",
+        "Location privacy: user coordinates must never be exposed exactly — only approximate distances"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Profile",
+          "schema": "{\n  user_id: string,\n  name: string,\n  age: int,\n  bio: string,\n  photos: [string],  // S3 URLs\n  location: { lat, lng },\n  preferences: { min_age, max_age, max_distance_km, gender }\n}"
+        },
+        {
+          "name": "Swipe",
+          "schema": "{\n  swiper_id: string,\n  swipee_id: string,\n  direction: enum(LIKE|PASS),\n  timestamp: ISO8601\n}"
+        },
+        {
+          "name": "Match",
+          "schema": "{\n  match_id: UUID,\n  user1_id: string,\n  user2_id: string,\n  matched_at: timestamp\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/v1/recommendations",
+          "description": "",
+          "request": "",
+          "response": "{ profiles: [{ user_id, name, age, photos, distance_km }] }"
+        },
+        {
+          "method": "POST",
+          "path": "/v1/swipes",
+          "description": "",
+          "request": "{ swipee_id, direction }",
+          "response": "{ is_match: bool, match_id? }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Profile Discovery",
+          "approaches": [
+            {
+              "title": "SQL Query with PostGIS",
+              "description": "Query PostgreSQL with PostGIS for users within radius, filtered by age and gender preferences. At 50M DAU each requesting 20 profiles, this is 1B DB queries/day. PostGIS radius queries on 50M users are slow without careful indexing.",
+              "tradeoff": "Too slow at scale; DB cannot handle query volume.",
+              "isRecommended": false
+            },
+            {
+              "title": "Redis Geo + Profile Cache",
+              "description": "Store user locations in Redis Geo. GEORADIUS returns nearby users. Filter by preferences in application layer. Fast proximity queries. But filtering 10k nearby users by age/gender in application layer is wasteful.",
+              "tradeoff": "Application-layer filtering is wasteful; returns many irrelevant profiles.",
+              "isRecommended": false
+            },
+            {
+              "title": "Pre-Computed Recommendation Deck",
+              "description": "A recommendation engine pre-computes a deck of 200 candidate profiles for each active user every 12 hours. The deck is stored in Redis (key = user_id, value = sorted list of candidate user_ids). The deck considers: proximity (Redis Geo), age/gender preferences, ELO-style attractiveness score, and already-swiped profiles (excluded). At swipe time, the next profile is popped from the deck. When the deck is exhausted, a new one is computed.",
+              "tradeoff": "Pre-computed deck may become stale (users move, new users join); 12-hour refresh may",
+              "isRecommended": true
+            },
+            {
+              "title": "miss new users.",
+              "description": "Match Detection Query DB for Mutual Like When user A likes user B, query the DB to check if user B has already liked user A. Simple but requires a DB query on every like. At 1B swipes/day, this is 1B DB queries/day.",
+              "tradeoff": "1B DB queries/day is too expensive.",
+              "isRecommended": false
+            },
+            {
+              "title": "Redis Bloom Filter for Mutual Like Detection",
+              "description": "When user A likes user B, check a Redis Bloom filter: 'has user B liked user A?' If the Bloom filter says yes (with possible false positives), query the DB to confirm. If confirmed, create a match. The Bloom filter is populated when likes are recorded. False positive rate ~0.1% means 0.1% of non-matches trigger a DB query — acceptable.",
+              "tradeoff": "False positives cause unnecessary DB queries; Bloom filter must be maintained per user.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Recommendation Service",
+            "responsibility": "Pre-computes profile decks; uses Redis Geo + ELO score + preference filters"
+          },
+          {
+            "name": "Swipe Service",
+            "responsibility": "Processes swipes; checks Bloom filter for mutual likes; creates matches"
+          },
+          {
+            "name": "Match Service",
+            "responsibility": "Creates match records; sends push notifications to both users"
+          },
+          {
+            "name": "Messaging Service",
+            "responsibility": "Handles in-app chat between matched users; uses WebSocket"
+          },
+          {
+            "name": "Profile Service",
+            "responsibility": "Manages user profiles and photos; serves profile data"
+          },
+          {
+            "name": "Cassandra",
+            "responsibility": "Stores swipes and matches; partition key = user_id"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Swipe Deck Freshness",
+          "content": "The pre-computed deck is refreshed every 12 hours. To handle new users and location changes, the\nRecommendation Service also maintains a 'hot deck' of users who joined or moved in the last hour. When a\nuser requests their next profile, the hot deck is checked first. This ensures new users appear in decks quickly\nwithout waiting for the full 12-hour refresh."
+        },
+        {
+          "title": "3. Messaging Architecture",
+          "content": "Tinder's messaging uses a WebSocket-based chat system. Messages are stored in Cassandra (partition key =\nmatch_id, clustering key = timestamp). When a message is sent, it's published to Kafka. The Messaging\nService consumes Kafka and pushes the message to the recipient's WebSocket connection. If the recipient is\noffline, a push notification is sent via APNs/FCM."
+        },
+        {
+          "title": "4. Photo Storage and Delivery",
+          "content": "Profile photos are stored in S3 and served via CloudFront CDN. Photos are resized to multiple dimensions\n(thumbnail 100x100, card 400x400, full 1080x1080) by a Lambda function triggered on upload. The CDN\ncaches photos at edge nodes. Profile photos are the dominant bandwidth cost — CDN caching is critical for\ncost efficiency."
+        },
+        {
+          "title": "5. Privacy and Safety",
+          "content": "Tinder implements several privacy features: (1) Location fuzzing: user locations are shown as approximate\ndistances (not exact coordinates), (2) Block/report: blocked users are excluded from each other's decks, (3)\nPhoto verification: AI-based photo verification to prevent catfishing, (4) Incognito mode: users can browse\nwithout appearing in others' decks. Blocked users are stored in a Redis set per user for fast exclusion during\ndeck computation."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Tinder — System Design\nDiscover · Swipe · Match · Chat\nUser\nswiper\nRec Svc\nSwipe Svc\nRedis\ndeck+geo+bloom\nKafka\nswipe events\nMatch Svc\nmutual like detect\nMessaging Svc\nWebSocket chat\nCassandra\nswipes+matches\nWebSocket GW\npush to user\nGET /recs\nPOST /swipes\nread deck\nbloom check\npublish swipe\nconsume\npersist swipe\nmatch notify\npush match\nsend message",
+      "keyFlows": [
+        "① GET /recs → Rec Svc → pop from Redis pre-computed deck",
+        "② POST /swipe (LIKE) → Swipe Svc → check Redis Bloom filter",
+        "③ Bloom filter hit → DB confirm → Match Svc creates match",
+        "④ Match notification → WebSocket push to both users",
+        "⑤ Matched users chat via Messaging Svc (WebSocket + Cassandra)"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study the ELO rating system: how it was originally designed for chess, how Tinder adapted it\nfor profile ranking, and the mathematical properties that make it self-balancing.\nExpert Note: Learn about Bloom filters: the mathematical relationship between false positive rate, number\nof hash functions, and filter size, and how to implement a per-user Bloom filter in Redis.\nExpert Note: Understand location privacy in dating apps: how to fuzz GPS coordinates to prevent exact\nlocation disclosure while maintaining useful proximity information.\nExpert Note: Study WebSocket-based messaging at scale: how to handle message ordering, delivery\nguarantees, and offline message delivery in a distributed chat system.\nExpert Note: Learn about recommendation system cold-start: how to handle new users with no swipe\nhistory, and how to bootstrap their ELO score and preference model."
+    }
+  }
+}

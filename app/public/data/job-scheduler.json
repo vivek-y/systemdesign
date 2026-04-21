@@ -1,0 +1,176 @@
+{
+  "id": "job-scheduler",
+  "name": "Job Scheduler",
+  "overview": "A distributed job scheduler executes tasks at specified times or on recurring schedules (cron-style) across a\ncluster of worker nodes. The system must guarantee at-least-once execution (no missed jobs), support\nexactly-once execution for idempotent jobs, handle worker failures gracefully, provide job prioritization, and\nscale to millions of scheduled jobs. The scheduler must be fault-tolerant — if the scheduler itself fails, jobs must\nnot be lost.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Schedule one-time jobs at a specific time",
+        "Schedule recurring jobs (cron expressions)",
+        "At-least-once execution guarantee",
+        "Job prioritization (HIGH/MEDIUM/LOW)",
+        "Job timeout and retry with backoff"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 10M scheduled jobs with 100k executions/minute",
+        "Scheduling precision ±100ms; jobs must not fire more than once (at-least-once with idempotency)",
+        "Fault tolerant: scheduler leader failure triggers re-election within 10 seconds; no jobs lost",
+        "99.9% availability for job dispatch; missed jobs during downtime must be caught up on restart",
+        "Horizontally scalable worker pool: auto-scale based on Kafka consumer lag",
+        "Job execution history retained for audit and debugging"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Job",
+          "schema": "{\n  job_id: UUID,\n  name: string,\n  schedule: string,  // cron expression or ISO8601 datetime\n  payload: JSON,\n  priority: enum(HIGH|MEDIUM|LOW),\n  timeout_seconds: int,\n\n  max_retries: int,\n  retry_backoff: enum(LINEAR|EXPONENTIAL),\n  status: enum(PENDING|RUNNING|COMPLETED|FAILED|CANCELLED)\n}"
+        },
+        {
+          "name": "JobExecution",
+          "schema": "{\n  execution_id: UUID,\n  job_id: UUID,\n  worker_id: string,\n  started_at: timestamp,\n  completed_at: timestamp,\n  status: enum(RUNNING|COMPLETED|FAILED|TIMED_OUT),\n  result: JSON,\n  error: string\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/jobs",
+          "description": "Create job",
+          "request": "{ name, schedule, payload, priority, timeout_seconds, max_retries }",
+          "response": "{ job_id, next_run_at }"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/jobs/{job_id}/executions",
+          "description": "",
+          "request": "",
+          "response": "{ executions: [{ execution_id, started_at, status, result }] }"
+        },
+        {
+          "method": "DELETE",
+          "path": "/v1/jobs/{job_id}",
+          "description": "Cancel job",
+          "request": "",
+          "response": "{ job_id, status: 'CANCELLED' }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Job Storage and Scheduling",
+          "approaches": [
+            {
+              "title": "Single-Node Cron",
+              "description": "Run a single cron daemon that reads jobs from a DB and executes them. Single point of failure. If the cron daemon crashes, all jobs are missed. Cannot scale beyond one machine.",
+              "tradeoff": "Single point of failure; not scalable.",
+              "isRecommended": false
+            },
+            {
+              "title": "Polling-Based Scheduler",
+              "description": "Multiple scheduler nodes poll the DB every second for jobs due in the next minute. The first scheduler to claim a job (using optimistic locking) executes it. Polling creates DB load. Race conditions between schedulers require careful locking. Polling interval limits scheduling precision.",
+              "tradeoff": "DB polling load; race conditions; 1-second minimum precision.",
+              "isRecommended": false
+            },
+            {
+              "title": "Time-Partitioned Priority Queue",
+              "description": "Jobs are stored in a time-partitioned priority queue (Redis sorted set, score = next_run_timestamp). A scheduler cluster uses leader election (Zookeeper) to elect a single leader that dequeues due jobs and dispatches them to worker queues. Workers pull jobs from priority queues (HIGH/MEDIUM/LOW) in Kafka. Job claims use distributed locks to prevent double execution. The scheduler leader is a lightweight process; if it fails, a new leader is elected within 10 seconds.",
+              "tradeoff": "Leader election adds complexity; Redis sorted set has O(log N) operations.",
+              "isRecommended": true
+            }
+          ]
+        },
+        {
+          "subTopic": "Exactly-Once Execution",
+          "approaches": [
+            {
+              "title": "No Deduplication",
+              "description": "Execute jobs without deduplication. If a worker crashes mid-execution, the job is retried and may execute twice. For non-idempotent jobs (e.g., send email, charge credit card), double execution causes real harm.",
+              "tradeoff": "Double execution for non-idempotent jobs is unacceptable.",
+              "isRecommended": false
+            },
+            {
+              "title": "Idempotency Key + Distributed Lock",
+              "description": "Each job execution is assigned a unique execution_id. Workers acquire a distributed lock (Redis SETNX) with the execution_id before starting. The lock TTL equals the job timeout. If a worker crashes, the lock expires and another worker can claim the job. The new worker checks if the job was already completed (by querying the execution DB) before executing. For truly non-idempotent jobs, the application layer must implement idempotency (e.g., check if email was already sent before sending).",
+              "tradeoff": "Distributed lock adds latency; lock TTL must be tuned carefully.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Scheduler API",
+            "responsibility": "Accepts job creation/cancellation; validates cron expressions; writes to"
+          },
+          {
+            "name": "Job DB (PostgreSQL)",
+            "responsibility": "Stores job definitions; source of truth for job state"
+          },
+          {
+            "name": "Redis Sorted Set",
+            "responsibility": "Time-partitioned queue: score = next_run_timestamp; O(log N) enqueue/dequeue"
+          },
+          {
+            "name": "Scheduler Leader",
+            "responsibility": "Elected via Zookeeper; dequeues due jobs; dispatches to Kafka worker queues"
+          },
+          {
+            "name": "Kafka Worker Queues",
+            "responsibility": "Separate topics per priority (HIGH/MEDIUM/LOW); workers consume from these"
+          },
+          {
+            "name": "Worker Pool",
+            "responsibility": "Stateless workers; pull jobs from Kafka; execute with timeout; report results"
+          },
+          {
+            "name": "Execution DB",
+            "responsibility": "(Cassandra) Stores execution history; partition key = job_id; clustering key = started_at"
+          },
+          {
+            "name": "Heartbeat Monitor",
+            "responsibility": "Detects timed-out executions; re-queues failed jobs with backoff"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Handling Missed Jobs",
+          "content": "If the scheduler is down for 10 minutes, jobs scheduled during that window are missed. On restart, the\nscheduler scans the Redis sorted set for jobs with next_run_timestamp < NOW() and executes them\nimmediately (catch-up mode). For jobs where missing is acceptable (e.g., metrics aggregation), a 'skip_if_late'\nflag prevents catch-up execution."
+        },
+        {
+          "title": "3. Worker Failure Detection",
+          "content": "Workers send heartbeats to the Heartbeat Monitor every 30 seconds. If a worker misses 3 heartbeats, it's\nmarked as failed. The Heartbeat Monitor queries the Execution DB for running executions on the failed worker\nand re-queues them (with retry count incremented). The distributed lock on the execution_id prevents the\noriginal worker (if it recovers) from completing the execution after it's been re-queued."
+        },
+        {
+          "title": "4. Job Prioritization",
+          "content": "Jobs are dispatched to separate Kafka topics per priority level. Workers are configured to consume from HIGH\npriority first, then MEDIUM, then LOW. This ensures high-priority jobs are never starved by low-priority jobs. For\nburst scenarios, additional worker instances can be spun up for specific priority levels using auto-scaling based\non Kafka consumer lag."
+        },
+        {
+          "title": "5. Distributed Cron Precision",
+          "content": "The scheduler dequeues jobs every 100ms (10 times per second). This gives a scheduling precision of\n±100ms, which is sufficient for most use cases. For jobs requiring sub-second precision, the scheduler can be\nconfigured to dequeue every 10ms, but this increases Redis load. True millisecond precision requires a\ndifferent architecture (e.g., timer wheels)."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Distributed Job Scheduler — System Design\nSchedule · Dispatch · Execute · Monitor\nClient\njob creator\nJob API\nJob DB\nPostgreSQL\nRedis SortedSet\nscore=next_run_ts\nZookeeper\nleader election\nScheduler\nLeader node\nKafka\nHIGH/MED/LOW queues\nWorkers\nexecute jobs\nHeartbeat Mon\ndetect failures\nExecution DB\nCassandra\nPOST /jobs\nwrite job\nZADD next_run\nelect leader\nZRANGEBYSCORE\ndispatch job\nconsume\nheartbeat\nwrite result\nre-queue failed",
+      "keyFlows": [
+        "① Client creates job → Job API → Job DB + Redis SortedSet (ZADD)",
+        "② Scheduler Leader (Zookeeper elected) polls Redis every 100ms",
+        "③ Due jobs dispatched to Kafka (HIGH/MEDIUM/LOW priority topics)",
+        "④ Workers consume Kafka → execute with distributed lock → write to Cassandra",
+        "⑤ Heartbeat Monitor detects failures → re-queues timed-out executions"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study Zookeeper's leader election protocol: how ephemeral nodes and watches are used to\nimplement distributed locks and leader election, and the trade-off vs. etcd.\nExpert Note: Learn about timer wheels: how they provide O(1) job scheduling by organizing jobs into\ncircular buckets, and why they're used in kernel-level timers and Kafka's delayed message queue.\nExpert Note: Understand Kafka consumer groups: how partition assignment works, how rebalancing is\ntriggered, and how to minimize rebalancing latency for job scheduling workloads.\nExpert Note: Study the exactly-once semantics problem in distributed systems: why it's fundamentally\nimpossible without idempotency at the application layer, and how to design idempotent job handlers.\nExpert Note: Learn about cron expression parsing: the Quartz cron format (7 fields vs. Unix 5 fields), how\nto compute the next N execution times efficiently, and edge cases like DST transitions.\n\nDistributed"
+    }
+  }
+}

@@ -1,0 +1,191 @@
+{
+  "id": "netflix",
+  "name": "Netflix",
+  "overview": "Netflix is a video streaming service that delivers high-quality video to 200M+ subscribers worldwide. The\nsystem must handle massive video upload and transcoding (content ingestion), serve video streams with\nadaptive bitrate to handle varying network conditions, provide personalized content recommendations, and\nmaintain high availability (99.99% uptime). Video delivery is the dominant workload, accounting for ~15% of\nglobal internet traffic.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Stream video with adaptive bitrate (360p to 4K)",
+        "Content ingestion: upload, transcode, and publish new titles",
+        "Personalized recommendations for each user",
+        "Resume playback from where user left off",
+        "Video start time <2 seconds"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 200M subscribers with 100M concurrent streams",
+        "Video start time <2 seconds; buffering rate <0.1%",
+        "99.99% availability — streaming outages are high-visibility incidents",
+        "Adaptive bitrate: gracefully degrade quality on poor networks rather than buffering",
+        "CDN cache hit rate >99% to protect origin infrastructure",
+        "Recommendation latency <200ms; model retrained daily on fresh engagement data"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Video",
+          "schema": "{\n  video_id: UUID,\n  title: string,\n  description: string,\n\n  duration_seconds: int,\n  genres: [string],\n  cast: [string],\n  release_year: int,\n  content_rating: string,\n  manifest_url: string  // HLS/DASH manifest\n}"
+        },
+        {
+          "name": "VideoChunk",
+          "schema": "{\n  video_id: UUID,\n  quality: enum(360P|480P|720P|1080P|4K),\n  chunk_index: int,\n  duration_seconds: float,\n  s3_key: string,\n  size_bytes: int\n}"
+        },
+        {
+          "name": "WatchHistory",
+          "schema": "{\n  user_id: string,\n  video_id: UUID,\n  watched_at: timestamp,\n  progress_seconds: int,\n  completed: boolean\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/v1/videos/{video_id}/manifest",
+          "description": "",
+          "request": "",
+          "response": "HLS manifest (.m3u8) with quality variants\n  #EXTM3U\n  #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360\n  /chunks/video_id/360p/index.m3u8\n  #EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1920x1080\n  /chunks/video_id/1080p/index.m3u8"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/recommendations",
+          "description": "",
+          "request": "",
+          "response": "{ videos: [{ video_id, title, match_score, reason }] }"
+        },
+        {
+          "method": "POST",
+          "path": "/v1/watch",
+          "description": "history",
+          "request": "{ user_id, video_id, progress_seconds }",
+          "response": "{ saved: true }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Video Delivery",
+          "approaches": [
+            {
+              "title": "Single Quality Stream from Origin",
+              "description": "Serve a single video quality from the origin server. Users on slow connections get buffering; users on fast connections get poor quality. No adaptation to network conditions.",
+              "tradeoff": "Poor user experience on variable networks; no quality adaptation.",
+              "isRecommended": false
+            },
+            {
+              "title": "CDN with Fixed Quality Levels",
+              "description": "Pre-transcode video to 5 quality levels; serve from CDN. Client selects quality manually. CDN reduces origin load. But manual quality selection is poor UX; client can't adapt to changing network conditions.",
+              "tradeoff": "No automatic adaptation; manual quality selection is poor UX.",
+              "isRecommended": false
+            },
+            {
+              "title": "Adaptive Bitrate Streaming (HLS/DASH) via CDN",
+              "description": "Video is transcoded into multiple quality levels (360p to 4K) and segmented into 4-second chunks. An HLS/DASH manifest lists all quality variants. The client player monitors download speed and buffer level, automatically switching quality levels between chunks. Netflix's Open Connect CDN deploys appliances in ISP data centers, serving content from within the ISP network for minimal latency.",
+              "tradeoff": "Transcoding pipeline is complex and compute-intensive; manifest management adds",
+              "isRecommended": true
+            },
+            {
+              "title": "overhead.",
+              "description": "Recommendations Popularity-Based Recommend the most-watched content globally. No personalization. Users see the same recommendations regardless of their taste.",
+              "tradeoff": "No personalization; poor for niche content discovery.",
+              "isRecommended": false
+            },
+            {
+              "title": "Collaborative Filtering",
+              "description": "Recommend content that similar users watched. 'Users who watched X also watched Y.' Better personalization but cold-start problem for new users and new content.",
+              "tradeoff": "Cold-start problem; doesn't use content features (genre, cast).",
+              "isRecommended": false
+            },
+            {
+              "title": "Two-Tower Neural Network",
+              "description": "A two-tower model: one tower encodes the user (watch history, ratings, demographics), another encodes the video (genre, cast, description embeddings). Dot product of towers gives relevance score. Pre-compute video embeddings offline. At query time, compute user embedding and find nearest video embeddings using approximate nearest neighbor (ANN) search (Faiss). Recommendations are pre-computed daily for all users and stored in Redis.",
+              "tradeoff": "Model training requires significant compute; ANN index must be rebuilt when new content is",
+              "isRecommended": true
+            },
+            {
+              "title": "added.",
+              "description": "",
+              "tradeoff": "",
+              "isRecommended": false
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Pipeline",
+            "responsibility": "Accepts raw video uploads; transcodes to multiple qualities; generates"
+          },
+          {
+            "name": "Open Connect CDN",
+            "responsibility": "Netflix's proprietary CDN; ISP-embedded appliances; serves video chunks"
+          },
+          {
+            "name": "Video API",
+            "responsibility": "Serves manifests and metadata; handles playback session management"
+          },
+          {
+            "name": "Recommendation Service",
+            "responsibility": "Serves pre-computed recommendations from Redis; falls back to ANN search"
+          },
+          {
+            "name": "Watch History Service",
+            "responsibility": "Records playback progress; enables resume; feeds recommendation model"
+          },
+          {
+            "name": "S3 (Origin)",
+            "responsibility": "Stores all transcoded video chunks and manifests; CDN origin"
+          },
+          {
+            "name": "Kafka",
+            "responsibility": "Streams watch events for recommendation model training"
+          },
+          {
+            "name": "Cassandra",
+            "responsibility": "Stores watch history; partition key = user_id; clustering key = watched_at"
+          },
+          {
+            "name": "Redis",
+            "responsibility": "Caches pre-computed recommendations and video metadata"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Adaptive Bitrate Algorithm",
+          "content": "Netflix's client player uses a buffer-based ABR algorithm (BOLA). The algorithm maintains a target buffer level\n(e.g., 30 seconds). If the buffer is above target, it requests higher quality chunks. If below target, it requests\nlower quality. The algorithm also considers the download speed of the last chunk to predict future bandwidth.\nThis gives smooth quality transitions without frequent oscillations."
+        },
+        {
+          "title": "3. Open Connect CDN",
+          "content": "Netflix's Open Connect CDN places appliances (servers with 100TB+ of storage) directly in ISP data centers.\nPopular content is pre-positioned on these appliances. When a user requests a video, the CDN routes them to\nthe nearest appliance. If the appliance doesn't have the content, it fetches from S3 origin and caches it. This\nreduces Netflix's transit costs and improves latency for users."
+        },
+        {
+          "title": "4. Chaos Engineering",
+          "content": "Netflix pioneered chaos engineering with Chaos Monkey, which randomly terminates production instances to\ntest resilience. The system is designed to handle failures gracefully: if a CDN node fails, the client retries with a\ndifferent node. If the recommendation service is slow, the API returns cached recommendations. If Cassandra\nis unavailable, watch history writes are queued in Kafka for later processing."
+        },
+        {
+          "title": "5. A/B Testing at Scale",
+          "content": "Netflix runs hundreds of A/B tests simultaneously. Each user is assigned to a test cell (a combination of\nexperiment variants). The assignment is stored in a user profile service and used to serve different UI layouts,\nrecommendation algorithms, and encoding parameters. Results are analyzed using a proprietary\nexperimentation platform that accounts for network effects (users in the same household may influence each\nother)."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Netflix — System Design\nIngest · Transcode · Stream · Recommend\nClient\nTV/mobile/web\nVideo API\nRec Svc\nCDN\nOpen Connect\nS3\norigin\nTranscode\nFFmpeg pipeline\nKafka\nwatch events\nRedis Cache\nrecs + metadata\nCassandra\nwatch history\nGET manifest\nGET recs\nserve chunks\norigin fetch\nraw video\ntranscoded chunks\nwatch events\nwrite history\nupdate recs\nread recs",
+      "keyFlows": [
+        "① Client requests manifest → Video API → CDN (Open Connect appliance)",
+        "② CDN serves HLS chunks; ABR player adapts quality to bandwidth",
+        "③ CDN miss → fetch from S3 origin → cache on CDN node",
+        "④ Watch events → Kafka → Cassandra (history) + Redis (rec update)",
+        "⑤ Recommendation Svc: pre-computed recs from Redis (two-tower model)"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study HLS (HTTP Live Streaming) and DASH (Dynamic Adaptive Streaming over HTTP):\nhow manifests work, the difference between segment-based and chunk-based streaming, and how ABR\nalgorithms work.\nExpert Note: Learn about Netflix's two-tower recommendation model: how user and item embeddings are\ntrained, how approximate nearest neighbor search (Faiss/ScaNN) enables fast retrieval.\nExpert Note: Understand Netflix's Open Connect CDN: how ISP peering works, how content is\npre-positioned using popularity data, and how the CDN routing algorithm selects the best appliance.\n\nExpert Note: Study chaos engineering principles: the difference between chaos experiments and fault\ninjection, how to design experiments that test specific failure modes without causing outages.\nExpert Note: Learn about video codec comparison: H.264 vs. H.265 vs. AV1 compression efficiency, the\ntrade-off between encoding time and compression ratio, and why Netflix uses per-title encoding."
+    }
+  }
+}

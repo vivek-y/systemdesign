@@ -1,0 +1,132 @@
+{
+  "designs": [
+    {
+      "id": "ads-click-aggregator",
+      "name": "Ads Click Aggregator"
+    },
+    {
+      "id": "bitly",
+      "name": "Bitly"
+    },
+    {
+      "id": "delivery-system",
+      "name": "Delivery System"
+    },
+    {
+      "id": "distributed-cache",
+      "name": "Distributed Cache"
+    },
+    {
+      "id": "dropbox",
+      "name": "Dropbox"
+    },
+    {
+      "id": "fb-live-comments",
+      "name": "FB Live Comments"
+    },
+    {
+      "id": "fb-news-feed",
+      "name": "FB News Feed"
+    },
+    {
+      "id": "fb-post-search",
+      "name": "FB Post Search"
+    },
+    {
+      "id": "google-docs",
+      "name": "Google Docs"
+    },
+    {
+      "id": "instagram",
+      "name": "Instagram"
+    },
+    {
+      "id": "job-scheduler",
+      "name": "Job Scheduler"
+    },
+    {
+      "id": "leet-code",
+      "name": "Leet Code"
+    },
+    {
+      "id": "lyft-driver-location",
+      "name": "Lyft Driver Location"
+    },
+    {
+      "id": "lyft-eta",
+      "name": "Lyft ETA"
+    },
+    {
+      "id": "lyft-ride-matching",
+      "name": "Lyft Ride Matching"
+    },
+    {
+      "id": "lyft-surge-pricing",
+      "name": "Lyft Surge Pricing"
+    },
+    {
+      "id": "metrics-monitoring",
+      "name": "Metrics Monitoring"
+    },
+    {
+      "id": "netflix",
+      "name": "Netflix"
+    },
+    {
+      "id": "news-aggregator",
+      "name": "News Aggregator"
+    },
+    {
+      "id": "online-auction",
+      "name": "Online Auction"
+    },
+    {
+      "id": "payment-system",
+      "name": "Payment System"
+    },
+    {
+      "id": "price-tracking",
+      "name": "Price Tracking"
+    },
+    {
+      "id": "rate-limiter",
+      "name": "Rate Limiter"
+    },
+    {
+      "id": "robinhood",
+      "name": "Robinhood"
+    },
+    {
+      "id": "strava",
+      "name": "Strava"
+    },
+    {
+      "id": "ticketmaster",
+      "name": "Ticketmaster"
+    },
+    {
+      "id": "tinder",
+      "name": "Tinder"
+    },
+    {
+      "id": "uber",
+      "name": "Uber"
+    },
+    {
+      "id": "web-crawler",
+      "name": "Web Crawler"
+    },
+    {
+      "id": "whats-app",
+      "name": "WhatsApp"
+    },
+    {
+      "id": "yelp",
+      "name": "Yelp"
+    },
+    {
+      "id": "you-tube",
+      "name": "YouTube"
+    }
+  ]
+}

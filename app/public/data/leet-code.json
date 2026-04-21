@@ -1,0 +1,169 @@
+{
+  "id": "leet-code",
+  "name": "Leet Code",
+  "overview": "An online judge accepts user-submitted code solutions, compiles and executes them in a sandboxed\nenvironment, runs them against test cases, and returns results (Accepted, Wrong Answer, Time Limit\nExceeded, etc.). The system must securely isolate user code execution to prevent malicious code from\naffecting other users or the host system, handle concurrent submissions efficiently, and return results within a\nfew seconds. The system must support multiple programming languages.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Submit code in Python, Java, C++, JavaScript",
+        "Execute against hidden test cases in a sandbox",
+        "Return verdict: Accepted/Wrong Answer/TLE/MLE/Runtime Error",
+        "Time limit: 2 seconds per test case",
+        "Memory limit: 256MB per submission"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 10k concurrent submissions with results returned within a few seconds",
+        "Sandbox isolation must be strong — user code must never affect other users or the host system",
+        "Verdict accuracy: time and memory limits enforced precisely",
+        "99.9% availability; submission queue must not be lost on worker failure",
+        "Horizontally scalable: add worker nodes to handle submission spikes (contests)",
+        "Pre-warmed execution pools eliminate cold-start latency for common languages"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Problem",
+          "schema": "{\n  problem_id: int,\n  title: string,\n  description: string,\n  difficulty: enum(EASY|MEDIUM|HARD),\n  time_limit_ms: int,\n\n  memory_limit_mb: int,\n  test_cases: [{ input: string, expected_output: string }],\n  starter_code: map<language, string>\n}"
+        },
+        {
+          "name": "Submission",
+          "schema": "{\n  submission_id: UUID,\n  problem_id: int,\n  user_id: string,\n  language: enum(PYTHON|JAVA|CPP|JS),\n  code: string,\n  status: enum(PENDING|RUNNING|ACCEPTED|WRONG_ANSWER|TLE|MLE|RUNTIME_ERROR),\n  runtime_ms: int,\n  memory_mb: int,\n  submitted_at: timestamp\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/submissions",
+          "description": "",
+          "request": "{ problem_id, language, code }",
+          "response": "{ submission_id, status: 'PENDING' }"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/submissions/{submission_id}",
+          "description": "",
+          "request": "",
+          "response": "{ submission_id, status, runtime_ms, memory_mb, test_results: [...] }\nWebSocket /v1/submissions/{submission_id}/status\nServer pushes: { status, runtime_ms, memory_mb, test_case_index, verdict }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Code Execution Sandbox",
+          "approaches": [
+            {
+              "title": "Execute Directly on Host",
+              "description": "Run user code directly on the server without isolation. Catastrophically insecure. User code can read/write files, make network calls, fork-bomb the server, or access other users' data.",
+              "tradeoff": "Completely insecure; unacceptable.",
+              "isRecommended": false
+            },
+            {
+              "title": "Docker Containers",
+              "description": "Run each submission in a Docker container with resource limits (CPU, memory, network disabled). Docker provides good isolation but container startup time (~500ms) adds latency. Container escape vulnerabilities exist (though rare).",
+              "tradeoff": "Container startup latency; container escape risk; Docker daemon is a privileged process.",
+              "isRecommended": false
+            },
+            {
+              "title": "gVisor / Firecracker MicroVMs",
+              "description": "Use gVisor (Google's user-space kernel) or Firecracker microVMs for stronger isolation. gVisor intercepts all system calls and runs them in a sandboxed kernel. Firecracker microVMs start in <125ms and provide VM-level isolation with minimal overhead. Worker nodes maintain a pool of pre-warmed execution environments to eliminate startup latency.",
+              "tradeoff": "gVisor has higher syscall overhead (~2x); Firecracker requires KVM support on host.",
+              "isRecommended": true
+            }
+          ]
+        },
+        {
+          "subTopic": "Result Delivery",
+          "approaches": [
+            {
+              "title": "Polling",
+              "description": "Client polls GET /submissions/{id} every second until status changes. Polling adds unnecessary load. 10k concurrent submissions × 1 req/sec = 10k req/sec just for polling.",
+              "tradeoff": "Unnecessary load; poor user experience.",
+              "isRecommended": false
+            },
+            {
+              "title": "WebSocket Push",
+              "description": "Execution worker publishes result to Kafka. A result delivery service consumes Kafka and pushes the result to the client via WebSocket. Client receives result within 100ms of execution completion. No polling overhead. WebSocket connection is maintained for the duration of the submission (typically <10 seconds).",
+              "tradeoff": "WebSocket adds connection management complexity; requires sticky routing.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Submission API",
+            "responsibility": "Accepts submissions; validates code size; publishes to Kafka; returns submission_id"
+          },
+          {
+            "name": "Kafka",
+            "responsibility": "Submission queue; partitioned by language for language-specific worker pools"
+          },
+          {
+            "name": "Execution Workers",
+            "responsibility": "Pull submissions from Kafka; spin up sandbox; execute code; publish results"
+          },
+          {
+            "name": "Sandbox",
+            "responsibility": "(gVisor/Firecracker) Isolated execution environment; enforces CPU/memory/time limits"
+          },
+          {
+            "name": "Result Service",
+            "responsibility": "Consumes execution results from Kafka; pushes to client via WebSocket"
+          },
+          {
+            "name": "Submission DB",
+            "responsibility": "(PostgreSQL) Stores submission records and results; indexed by user_id and problem_id"
+          },
+          {
+            "name": "Problem DB (PostgreSQL)",
+            "responsibility": "Stores problem definitions and test cases; read-heavy; cached in Redis"
+          },
+          {
+            "name": "Leaderboard Service",
+            "responsibility": "Computes rankings by acceptance rate and runtime; updated asynchronously"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Test Case Execution",
+          "content": "Each submission is run against all test cases sequentially. If any test case fails, execution stops and the verdict\nis returned immediately (fail-fast). For TLE detection, the execution is wrapped in a timeout: if the process\ndoesn't complete within time_limit_ms, it receives SIGKILL. Memory usage is monitored via /proc/{pid}/status\nand compared against memory_limit_mb."
+        },
+        {
+          "title": "3. Pre-Warmed Execution Pools",
+          "content": "Cold-starting a Firecracker microVM takes ~125ms. To eliminate this latency, each worker node maintains a\npool of 10 pre-warmed microVMs per language. When a submission arrives, a pre-warmed VM is claimed from\nthe pool, the code is injected, and execution begins immediately. After execution, the VM is discarded (not\nreused) to prevent state leakage. The pool is continuously replenished in the background."
+        },
+        {
+          "title": "4. Handling Concurrent Submissions",
+          "content": "10k concurrent submissions require 10k execution environments. Worker nodes are horizontally scalable —\neach node runs 10 concurrent executions (one per pre-warmed VM). 1,000 worker nodes handle 10k\nconcurrent submissions. Kafka consumer groups distribute submissions across worker nodes. Auto-scaling\nadds worker nodes when Kafka consumer lag exceeds a threshold."
+        },
+        {
+          "title": "5. Leaderboard and Statistics",
+          "content": "The leaderboard shows the fastest accepted solutions per problem. After each accepted submission, the\nLeaderboard Service updates the problem's runtime distribution (stored as a histogram in Redis). The user's\nsubmission is ranked by comparing its runtime against the distribution. This gives the 'Faster than X% of\nsubmissions' metric shown on LeetCode."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "LeetCode (Online Judge) — System Design\nSubmit · Sandbox · Execute · Result\nClient\nbrowser\nSubmit API\nKafka\nby language\nExec Workers\npre-warmed pool\nSandbox\ngVisor/Firecracker\nResult Svc\nKafka consumer\nWebSocket Svc\nProblem DB\ntest cases\nLeaderboard\nruntime stats\nPOST /submit\nWS connect\nenqueue\nconsume\nexecute\nfetch test cases\npublish result\npush result\nupdate stats",
+      "keyFlows": [
+        "① Client submits code → Submit API → Kafka (partitioned by language)",
+        "② Exec Worker claims submission → fetches test cases from Problem DB",
+        "③ Worker spins up pre-warmed Sandbox → executes code → collects verdict",
+        "④ Result published to Kafka → Result Svc → WebSocket push to client",
+        "⑤ Accepted submissions update Leaderboard runtime distribution"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study Linux namespaces and cgroups: how they provide process isolation (PID, network,\nfilesystem namespaces) and resource limits (CPU, memory, I/O) — the foundation of container technology.\nExpert Note: Learn about gVisor's architecture: how the Sentry (user-space kernel) intercepts syscalls, the\nGofer process for filesystem access, and the performance trade-off vs. native execution.\nExpert Note: Understand Firecracker's design: how it uses KVM to create lightweight microVMs, the jailer\nprocess for additional isolation, and how it achieves <125ms boot time.\nExpert Note: Study seccomp-bpf filters: how they use BPF programs to whitelist/blacklist syscalls, and how\nto design a minimal syscall allowlist for a code execution sandbox.\nExpert Note: Learn about the Judge0 open-source online judge: its architecture, how it handles multiple\nlanguages, and how it compares to building a custom judge from scratch.\n\nLeetCode (Online Judge)"
+    }
+  }
+}

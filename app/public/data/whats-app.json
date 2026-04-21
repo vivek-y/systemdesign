@@ -1,0 +1,158 @@
+{
+  "id": "whats-app",
+  "name": "WhatsApp",
+  "overview": "WhatsApp is a messaging platform supporting 1-on-1 and group chats, media sharing, voice/video calls, and\nend-to-end encryption. The system must deliver messages reliably (at-least-once delivery), support offline\nmessage queuing (deliver when recipient comes online), handle group messages with thousands of members,\nand maintain end-to-end encryption. WhatsApp serves 2B+ users with 100B+ messages per day.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Send and receive text messages (1-on-1 and groups)",
+        "Message delivery receipts (sent, delivered, read)",
+        "Offline message queuing (deliver when online)",
+        "Media sharing (photos, videos, documents)",
+        "End-to-end encryption"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 2B users sending 100B messages/day (~1.15M messages/sec)",
+        "Message delivery latency <500ms for online recipients",
+        "At-least-once delivery guarantee; messages must not be lost",
+        "99.99% availability — messaging outages are immediately user-visible",
+        "Offline message queue retained for up to 30 days",
+        "End-to-end encryption must not be compromised by server-side components"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Message",
+          "schema": "{\n  message_id: UUID,\n  chat_id: string,\n  sender_id: string,\n  content: bytes,  // encrypted\n  content_type: enum(TEXT|IMAGE|VIDEO|AUDIO|DOCUMENT),\n  timestamp: ISO8601,\n  status: enum(SENT|DELIVERED|READ)\n}"
+        },
+        {
+          "name": "Chat",
+          "schema": "{\n  chat_id: string,\n  type: enum(DIRECT|GROUP),\n  participants: [string],\n  last_message_id: UUID,\n  created_at: timestamp\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/media/upload",
+          "description": "",
+          "request": "(multipart): { file, chat_id }",
+          "response": "{ media_id, url }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Message Delivery",
+          "approaches": [
+            {
+              "title": "HTTP Request-Response",
+              "description": "Client sends message via HTTP POST. Server stores and delivers to recipient. HTTP is stateless — server cannot push messages to recipient. Recipient must poll. High latency and server load.",
+              "tradeoff": "No server push; polling required; high latency.",
+              "isRecommended": false
+            },
+            {
+              "title": "WebSocket with In-Memory Routing",
+              "description": "Each client maintains a WebSocket connection. Server routes messages between connections. Works for single server but doesn't scale. With multiple servers, sender and recipient may be on different servers.",
+              "tradeoff": "Doesn't scale across multiple servers; no offline delivery.",
+              "isRecommended": false
+            },
+            {
+              "title": "WebSocket + Message Queue for Offline Delivery",
+              "description": "Each client maintains a WebSocket connection to a chat server. Chat servers are stateless — they route messages via a message queue. When recipient is online: message is delivered directly via WebSocket. When offline: message is stored in a per-user message queue (Redis list with TTL = 30 days). On reconnect, the client fetches all queued messages. Delivery receipts are sent back via WebSocket.",
+              "tradeoff": "Redis message queue requires persistence; 30-day TTL may not be sufficient for all users.",
+              "isRecommended": true
+            }
+          ]
+        },
+        {
+          "subTopic": "Group Messaging",
+          "approaches": [
+            {
+              "title": "Fan-out on Write",
+              "description": "When a message is sent to a group, immediately deliver to all members. For a group with 1000 members, one message triggers 1000 deliveries. At 100B messages/day with average group size 50, this is 5 trillion deliveries/day.",
+              "tradeoff": "Fan-out storm for large groups; prohibitive at scale.",
+              "isRecommended": false
+            },
+            {
+              "title": "Fan-out via Kafka with Per-Member Queues",
+              "description": "Group message is published to Kafka. A fan-out service consumes the message and writes it to each member's message queue. Fan-out is asynchronous and parallelized. For large groups (>256 members), fan-out is rate-limited to prevent queue flooding. WhatsApp limits group size to 1024 members to bound fan-out cost.",
+              "tradeoff": "Fan-out latency increases with group size; Kafka adds operational complexity.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Chat Servers",
+            "responsibility": "Maintain WebSocket connections; route messages; manage delivery receipts"
+          },
+          {
+            "name": "Message Queue (Redis)",
+            "responsibility": "Per-user offline message queue; TTL = 30 days; delivers on reconnect"
+          },
+          {
+            "name": "Kafka",
+            "responsibility": "Group message fan-out; message persistence; delivery receipt events"
+          },
+          {
+            "name": "Media Service",
+            "responsibility": "Handles media uploads; stores in S3; generates thumbnails"
+          },
+          {
+            "name": "User Presence Service",
+            "responsibility": "Tracks online/offline status; last seen timestamp"
+          },
+          {
+            "name": "Message DB (Cassandra)",
+            "responsibility": "Stores message history; partition key = chat_id; clustering key = timestamp"
+          },
+          {
+            "name": "Push Notification Service",
+            "responsibility": "Sends APNs/FCM notifications when user is offline"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Message Ordering",
+          "content": "Messages within a chat must be delivered in order. Each message has a client-generated timestamp and a\nserver-assigned sequence number. The sequence number is monotonically increasing per chat. If messages\narrive out of order (due to network issues), the client buffers them and displays them in sequence number\norder. The server assigns sequence numbers atomically using a Redis counter per chat_id."
+        },
+        {
+          "title": "3. Delivery Receipts",
+          "content": "WhatsApp shows three receipt states: one tick (sent to server), two ticks (delivered to recipient's device), two\nblue ticks (read by recipient). Sent: server acknowledges receipt. Delivered: recipient's device acknowledges\nreceipt via WebSocket. Read: recipient opens the chat and sends a read receipt. Receipts are stored in\nCassandra and pushed to the sender via WebSocket."
+        },
+        {
+          "title": "4. Media Delivery",
+          "content": "Media files are uploaded to S3 via the Media Service. The media_id is included in the message. The recipient\ndownloads the media from S3/CDN when they open the message. Media is encrypted client-side before upload\n(end-to-end encrypted). The server stores only the encrypted media blob — it cannot decrypt it. Media is\ndeleted from S3 after 30 days if not downloaded."
+        },
+        {
+          "title": "5. Presence and Last Seen",
+          "content": "The User Presence Service tracks online/offline status. When a user connects, their status is set to ONLINE in\nRedis. When they disconnect, it's set to OFFLINE with a last_seen timestamp. Presence updates are published\nto Kafka and pushed to the user's contacts via WebSocket. Users can configure privacy settings to hide their\nlast seen timestamp."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "WhatsApp — System Design\nConnect · Encrypt · Deliver · Receipt\nUser A\nsender\nUser B\nrecipient\nChat Servers\nWebSocket\nRedis MQ\noffline queue\nKafka\nfan-out\nMedia Svc\nupload/download\nS3\nmedia store\nCassandra\nmsg history\nWS send msg\nWS connect\noffline queue\ngroup fan-out\ndeliver on connect\npersist msg\nupload media\nstore encrypted\ndownload media",
+      "keyFlows": [
+        "① User A sends message → Chat Server → route to User B (if online)",
+        "② User B offline: message stored in Redis offline queue (30-day TTL)",
+        "③ User B reconnects → Chat Server delivers queued messages",
+        "④ Group message → Kafka → fan-out to all member queues",
+        "⑤ Media: encrypted upload to S3 → media_id in message → recipient downloads"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study the Signal Protocol: the X3DH key agreement protocol, the Double Ratchet algorithm\nfor forward secrecy, and how WhatsApp implements group encryption using sender keys.\nExpert Note: Learn about WebSocket connection management at scale: how to use consistent hashing to\nroute users to the same chat server, and how to handle server restarts without dropping messages.\nExpert Note: Understand Cassandra's data model for messaging: how to design the partition key and\nclustering key for efficient message retrieval, and how to handle the 'last message' query efficiently.\nExpert Note: Study the CAP theorem implications for messaging: why WhatsApp chose availability over\nconsistency (messages may be delivered out of order during network partitions), and how sequence\nnumbers restore order.\nExpert Note: Learn about push notification delivery: how APNs and FCM handle offline message delivery,\nthe difference between high-priority and normal-priority notifications, and how to handle token expiration."
+    }
+  }
+}

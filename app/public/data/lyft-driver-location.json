@@ -1,0 +1,144 @@
+{
+  "id": "lyft-driver-location",
+  "name": "Lyft Driver Location",
+  "overview": "The Driver Location Service continuously tracks the real-time GPS positions of all active Lyft drivers. It must\ningest location updates from hundreds of thousands of drivers every few seconds, store the latest position for\nfast lookup, maintain a geospatial index for proximity queries (find drivers near a given point), and stream\nlocation updates to riders tracking their driver. The system is write-heavy and latency-sensitive.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Ingest driver location updates every 4 seconds",
+        "Query nearest available drivers within a radius",
+        "Stream driver location to rider during active ride",
+        "Location update latency <100ms end-to-end",
+        "Store 24 hours of location history per driver"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 500k active drivers with 125k location writes/sec",
+        "Location update latency <100ms end-to-end",
+        "Proximity query (GEORADIUS) latency <5ms",
+        "99.99% availability — location tracking outages directly break ride matching",
+        "Eventual consistency for location data; stale positions up to 4 seconds are acceptable",
+        "24-hour location history per driver retained for analytics and dispute resolution"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "DriverLocation",
+          "schema": "{\n  driver_id: string,\n  lat: float,\n  lng: float,\n  heading: float,\n  speed: float,\n  timestamp: ISO8601,\n  status: enum(AVAILABLE|ON_TRIP|OFFLINE)\n\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/drivers/{driver_id}/location",
+          "description": "Driver heartbeat",
+          "request": "{ lat, lng, heading, speed, timestamp }",
+          "response": "{ next_update_interval_seconds }"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/drivers/nearby",
+          "description": "",
+          "request": "",
+          "response": "{ drivers: [{ driver_id, lat, lng, distance_km, eta_minutes }] }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Location Storage",
+          "approaches": [
+            {
+              "title": "PostgreSQL with PostGIS",
+              "description": "Store driver locations in PostgreSQL with PostGIS geometry columns. Use ST_DWithin for radius queries. 500k drivers × 1 update/4s = 125k writes/sec. PostgreSQL cannot sustain this write load. PostGIS radius queries on 500k rows take >100ms.",
+              "tradeoff": "Write throughput too high; query latency too slow.",
+              "isRecommended": false
+            },
+            {
+              "title": "Redis GEOADD/GEORADIUS",
+              "description": "Use Redis GEOADD to store driver locations. GEORADIUS queries find nearby drivers in O(N+log M). Redis handles 125k writes/sec easily. GEORADIUS on 500k drivers completes in <5ms. Single Redis instance is a bottleneck; no persistence for location history.",
+              "tradeoff": "Single Redis instance bottleneck; no location history.",
+              "isRecommended": false
+            },
+            {
+              "title": "Redis Geo (sharded by geohash) + Cassandra history",
+              "description": "Shard Redis by geohash prefix (4 chars = ~40km cells). Each shard handles a geographic region. Location history written asynchronously to Cassandra (partition key = driver_id, clustering key = timestamp DESC). Rider tracking uses a dedicated Redis pub/sub channel per active ride.",
+              "tradeoff": "Cross-shard queries for drivers near cell boundaries; Cassandra adds write path complexity.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Location Ingest API",
+            "responsibility": "Receives driver heartbeats; validates; writes to Redis Geo + publishes to"
+          },
+          {
+            "name": "Redis Geo (sharded)",
+            "responsibility": "Geospatial index for driver positions; sharded by geohash prefix"
+          },
+          {
+            "name": "Kafka",
+            "responsibility": "Streams location updates for rider tracking and history archival"
+          },
+          {
+            "name": "Cassandra",
+            "responsibility": "24-hour location history; partition key = driver_id"
+          },
+          {
+            "name": "Proximity Service",
+            "responsibility": "Queries Redis Geo for nearby drivers; returns sorted by distance"
+          },
+          {
+            "name": "Rider Tracking Service",
+            "responsibility": "Subscribes to Kafka for active ride driver updates; pushes to rider via"
+          },
+          {
+            "name": "WebSocket Gateway",
+            "responsibility": "Maintains rider connections; receives driver location pushes"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Rider Tracking During Active Ride",
+          "content": "When a ride starts, the Rider Tracking Service subscribes to a Kafka topic partition for the driver's driver_id.\nEvery location update from the driver is published to Kafka and consumed by the Rider Tracking Service, which\npushes it to the rider's WebSocket connection. The rider sees the driver's position update every 4 seconds.\nWhen the ride ends, the subscription is cancelled."
+        },
+        {
+          "title": "3. Driver Status Management",
+          "content": "Driver status (AVAILABLE/ON_TRIP/OFFLINE) is stored in Redis alongside the location. When a driver goes\noffline (no heartbeat for 30 seconds), a background job marks them as OFFLINE and removes them from the\ngeospatial index. This prevents stale driver positions from appearing in proximity queries."
+        },
+        {
+          "title": "4. Location Smoothing",
+          "content": "Raw GPS coordinates have noise (±10 meters). The Location Ingest API applies a Kalman filter to smooth\ndriver positions before storing them. This reduces jitter in the rider's tracking view and improves ETA accuracy.\n\nThe Kalman filter uses the driver's previous position, speed, and heading to predict the next position and\ncorrect it with the GPS measurement."
+        },
+        {
+          "title": "5. Capacity Planning",
+          "content": "500k drivers × 1 update/4s = 125k writes/sec. Redis GEOADD is O(log N). With 20 Redis shards, each shard\nhandles ~6,250 writes/sec — well within Redis's 100k ops/sec capacity. Kafka handles 125k messages/sec\nwith 10 partitions at 12.5k messages/sec each. Cassandra handles 125k writes/sec with a 10-node cluster at\n12.5k writes/sec per node."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Lyft Driver Location — System Design\nIngest · Index · Track · Stream\nDriver\nmobile app\nRider\nmobile app\nLocation API\nKafka\nloc updates\nRedis Geo\ngeohash shards\nCassandra\n24h history\nProximity Svc\nGEORADIUS\nTracking Svc\nactive rides\nWebSocket GW\nrider push\nPOST location\nGET /nearby\nGEOADD\npublish\nhistory write\nactive ride stream\nGEORADIUS\npush location\nWS push",
+      "keyFlows": [
+        "① Driver sends GPS every 4s → Location API → Redis Geo (GEOADD)",
+        "② Location API publishes to Kafka → Cassandra (history) + Tracking Svc",
+        "③ Rider requests nearby drivers → Proximity Svc → Redis GEORADIUS",
+        "④ Active ride: Tracking Svc streams driver location → WebSocket → Rider",
+        "⑤ Driver offline (30s no heartbeat) → removed from Redis Geo index"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study geohash in depth: the base32 encoding, how precision levels map to cell sizes, and the\nneighbor calculation algorithm for finding adjacent cells.\nExpert Note: Learn about Kalman filters for GPS smoothing: the predict-update cycle, how to tune the\nprocess noise and measurement noise covariance matrices.\nExpert Note: Understand Redis Geo internals: how GEOADD stores coordinates as 52-bit integers in a\nsorted set, and how GEORADIUS uses the sorted set for range queries.\nExpert Note: Study WebSocket connection management for real-time tracking: how to handle connection\ndrops and reconnects without missing location updates.\nExpert Note: Learn about Cassandra's time-series data model: how to design partition keys to avoid hot\npartitions, and how to use TTL for automatic data expiration."
+    }
+  }
+}

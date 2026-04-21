@@ -1,0 +1,148 @@
+{
+  "id": "rate-limiter",
+  "name": "Rate Limiter",
+  "overview": "A rate limiter controls the rate of requests from clients to protect backend services from overload and abuse. It\nmust enforce per-user, per-IP, and per-API-key rate limits with sub-millisecond overhead, support multiple rate\nlimiting algorithms (token bucket, sliding window), work correctly in a distributed environment (multiple API\ngateway instances), and provide informative error responses with retry-after headers.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Enforce rate limits per user, IP, and API key",
+        "Support token bucket and sliding window algorithms",
+        "Sub-millisecond rate limit check overhead",
+        "Distributed: consistent limits across multiple gateway nodes",
+        "Return 429 with Retry-After header on limit exceeded"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 1M requests/second across all clients with <1ms overhead per rate limit check",
+        "Distributed: limits enforced consistently across all gateway nodes — not multiplied per node",
+        "99.99% availability; Redis failure must fall back gracefully (local counters) rather than blocking all traffic",
+        "Rate limit rules propagate to all gateways within 60 seconds of update",
+        "Informative 429 responses with Retry-After and X-RateLimit headers for client backoff",
+        "Horizontally scalable: adding gateway nodes must not change effective rate limits"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "RateLimit",
+          "schema": "{\n  limit_id: string,  // e.g., 'user:123:api_calls'\n  algorithm: enum(TOKEN_BUCKET|SLIDING_WINDOW|FIXED_WINDOW),\n  max_requests: int,\n  window_seconds: int,\n  current_count: int,\n  last_refill: timestamp\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": []
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Rate Limiting Algorithm",
+          "approaches": [
+            {
+              "title": "Fixed Window Counter",
+              "description": "Count requests in fixed time windows (e.g., 100 requests per minute). Reset counter at window boundary. Boundary problem: a client can make 100 requests at 11:59 and 100 more at 12:00, effectively making 200 requests in 2 seconds.",
+              "tradeoff": "Boundary burst allows 2x the limit at window boundaries.",
+              "isRecommended": false
+            },
+            {
+              "title": "Sliding Window Log",
+              "description": "Store timestamp of each request in a sorted set. Count requests in the last N seconds. Accurate but memory-intensive: stores one entry per request. At 1M req/sec, this requires enormous Redis memory.",
+              "tradeoff": "High memory usage; O(N) per request for cleanup.",
+              "isRecommended": false
+            },
+            {
+              "title": "Sliding Window Counter (Hybrid)",
+              "description": "Combine fixed window counters with interpolation. Keep counters for current and previous windows. Estimate current rate as: prev_count × (1 - elapsed/window) + curr_count. Memory-efficient (only 2 counters per client) and approximately accurate (within 0.003% error for most traffic patterns). Implemented as a Redis Lua script for atomicity.",
+              "tradeoff": "Approximate (not exact) sliding window; error is negligible for most use cases.",
+              "isRecommended": true
+            }
+          ]
+        },
+        {
+          "subTopic": "Distributed Rate Limiting",
+          "approaches": [
+            {
+              "title": "Local In-Memory Counter",
+              "description": "Each API gateway node maintains its own in-memory counter. With 10 gateway nodes, each node allows 100 requests/minute, giving a total of 1000 requests/minute — 10x the intended limit.",
+              "tradeoff": "Limit is multiplied by number of nodes; not a true distributed limit.",
+              "isRecommended": false
+            },
+            {
+              "title": "Centralized Redis Counter",
+              "description": "All gateway nodes share a single Redis instance for rate limit counters. Correct but adds a Redis round-trip to every request (~1ms). At 1M req/sec, Redis becomes a bottleneck.",
+              "tradeoff": "Redis round-trip adds latency; Redis is a single point of failure.",
+              "isRecommended": false
+            },
+            {
+              "title": "Local Counter + Periodic Sync",
+              "description": "Each gateway node maintains a local counter. Every 100ms, nodes sync their local counts to Redis and fetch the global count. Requests are allowed if local_count + global_count < limit. This allows slight over-counting (up to 100ms × rate) but eliminates per-request Redis calls. For strict limits, use synchronous Redis Lua script. For approximate limits, use async sync.",
+              "tradeoff": "Slight over-counting during sync interval; not suitable for strict financial rate limits.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "API Gateway",
+            "responsibility": "Intercepts all requests; calls Rate Limiter middleware; forwards allowed requests"
+          },
+          {
+            "name": "Rate Limiter Middleware",
+            "responsibility": "Checks rate limits; returns 429 if exceeded; adds rate limit headers"
+          },
+          {
+            "name": "Redis Cluster",
+            "responsibility": "Stores rate limit counters; Lua scripts for atomic check-and-increment"
+          },
+          {
+            "name": "Rate Limit Config DB",
+            "responsibility": "Stores rate limit rules per user/IP/API key; cached in gateway memory"
+          },
+          {
+            "name": "Admin API",
+            "responsibility": "Manages rate limit rules; supports dynamic updates"
+          },
+          {
+            "name": "Metrics Service",
+            "responsibility": "Tracks rate limit hit rates per client; identifies abusive clients"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Sliding Window Counter Implementation",
+          "content": "The sliding window counter uses two Redis keys per client: current_window_count and\nprevious_window_count. On each request: (1) Compute elapsed = (now % window_seconds) /\nwindow_seconds, (2) Estimate = prev_count × (1 - elapsed) + curr_count, (3) If estimate < limit, increment\ncurr_count and allow. At window boundary, curr_count becomes prev_count and curr_count resets to 0."
+        },
+        {
+          "title": "3. Rate Limit Headers",
+          "content": "The rate limiter adds informative headers to every response: X-RateLimit-Limit (the limit),\nX-RateLimit-Remaining (remaining requests in current window), X-RateLimit-Reset (Unix timestamp when the\nwindow resets), Retry-After (seconds until the client can retry, only on 429). These headers allow clients to\nimplement adaptive request rates and avoid hammering the rate limiter."
+        },
+        {
+          "title": "4. Handling Redis Failures",
+          "content": "If Redis is unavailable, the rate limiter falls back to local in-memory counters. This allows slight over-counting\nbut prevents a Redis outage from taking down the entire API. The fallback is time-limited: if Redis is unavailable\nfor >30 seconds, the rate limiter switches to 'fail open' mode (allow all requests) to prevent service degradation.\nAlerts are triggered immediately on Redis failure."
+        },
+        {
+          "title": "5. Rate Limit Rule Management",
+          "content": "Rate limit rules are stored in a configuration DB (PostgreSQL) and cached in each gateway node's memory\n(refreshed every 60 seconds). Rules can be defined at multiple levels: global (all users), per-plan (free/paid),\nper-user, per-IP. The most specific rule takes precedence. Dynamic rule updates (e.g., blocking an abusive IP)\npropagate to all gateways within 60 seconds via cache refresh."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Rate Limiter — System Design\nCheck · Count · Allow · Reject\nClient\nAPI consumer\nAPI Gateway\nintercept all req\nRate Limiter\nmiddleware\nRedis Cluster\ncounters + Lua\nBackend Svc\nprotected API\nConfig DB\nrate limit rules\nAdmin API\nmanage rules\nHTTP request\ncheck limit\nINCR / Lua\nallow (200)\nreject (429)\nrules cache\nupdate rules",
+      "keyFlows": [
+        "① Client request → API Gateway → Rate Limiter middleware",
+        "② Rate Limiter: check Redis counter (Lua script, atomic)",
+        "③ Under limit: increment counter → forward to Backend (200)",
+        "④ Over limit: return 429 with Retry-After + X-RateLimit headers",
+        "⑤ Redis failure: fallback to local in-memory counter (fail open)"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study all four rate limiting algorithms in depth: fixed window, sliding window log, sliding\nwindow counter, and token bucket — understand the trade-offs between accuracy, memory, and\ncomplexity.\nExpert Note: Learn about Redis Lua scripting for atomic operations: why Lua scripts are atomic in Redis\n(single-threaded execution), and how to implement complex rate limiting logic without race conditions.\nExpert Note: Understand the Leaky Bucket algorithm: how it differs from token bucket, why it's used for\ntraffic shaping (smooth output rate) vs. rate limiting (burst allowance).\nExpert Note: Study distributed rate limiting patterns: the trade-off between consistency (centralized Redis)\nand performance (local counters with sync), and how to choose based on use case requirements.\nExpert Note: Learn about HTTP rate limit headers: the IETF draft standard for RateLimit headers, how\nRetry-After works, and how clients should implement exponential backoff."
+    }
+  }
+}

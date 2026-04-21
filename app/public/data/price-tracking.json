@@ -1,0 +1,170 @@
+{
+  "id": "price-tracking",
+  "name": "Price Tracking",
+  "overview": "A price tracking system monitors product prices across multiple e-commerce websites, stores price history, and\nalerts users when prices drop below their target. The system must crawl millions of product pages regularly,\ndetect price changes, store historical price data efficiently, and send timely alerts. Think CamelCamelCamel for\nAmazon or Honey for general e-commerce.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Track prices for products across multiple retailers",
+        "Check prices every 1-6 hours per product",
+        "Store complete price history",
+        "Alert users when price drops below target",
+        "Price check latency <30 minutes from actual change"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 10M tracked products and 5M users",
+        "Price check latency <30 minutes from actual price change to detection",
+        "Alert delivery within 5 minutes of price drop detection",
+        "99.9% availability for alert delivery; crawl delays are tolerable over missed alerts",
+        "Crawlers must respect robots.txt and per-domain rate limits to avoid being blocked",
+        "Price history stored efficiently: only write on change (~95% write reduction vs. every check)"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "TrackedProduct",
+          "schema": "{\n  product_id: UUID,\n  url: string,\n  retailer: string,\n  name: string,\n  current_price: decimal,\n  currency: string,\n  last_checked: timestamp,\n  check_frequency_hours: int\n}"
+        },
+        {
+          "name": "PriceAlert",
+          "schema": "{\n  alert_id: UUID,\n  user_id: string,\n  product_id: UUID,\n  target_price: decimal,\n  notification_method: enum(EMAIL|PUSH|SMS),\n  is_active: boolean\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/alerts",
+          "description": "",
+          "request": "{ user_id, product_url, target_price, notification_method }",
+          "response": "{ alert_id, product_id, current_price }"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/products/{product_id}/history",
+          "description": "",
+          "request": "",
+          "response": "{ product_id, prices: [{ price, timestamp }], min_price, max_price }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Price Crawling Strategy",
+          "approaches": [
+            {
+              "title": "Single Crawler, Fixed Schedule",
+              "description": "One crawler checks all products every hour. 10M products × 1 check/hour = 2,778 checks/sec. A single crawler cannot handle this. Also, all products checked at the same time creates load spikes.",
+              "tradeoff": "Single crawler cannot scale; load spikes from synchronized schedules.",
+              "isRecommended": false
+            },
+            {
+              "title": "Distributed Crawlers with Round-Robin",
+              "description": "Multiple crawlers pull products from a queue in round-robin fashion. Better throughput but no prioritization. Popular products (many users tracking) should be checked more frequently than obscure products.",
+              "tradeoff": "No prioritization; popular products checked at same frequency as obscure ones.",
+              "isRecommended": false
+            },
+            {
+              "title": "Priority Queue with Adaptive Frequency",
+              "description": "Products are stored in a priority queue (Redis sorted set, score = next_check_time). Products with more trackers are checked more frequently (every 1 hour vs. every 6 hours). Crawlers pull the highest-priority products from the queue. After checking, the product is re-inserted with score = now + check_frequency. Crawlers respect robots.txt and rate limits per retailer domain.",
+              "tradeoff": "Priority queue management adds complexity; adaptive frequency requires tracking user count",
+              "isRecommended": true
+            },
+            {
+              "title": "per product.",
+              "description": "Price Change Detection Store Every Price Check Store the price from every check in the DB. At 2,778 checks/sec, this creates 240M rows/day. Most checks show no price change — wasteful storage.",
+              "tradeoff": "Excessive storage for unchanged prices.",
+              "isRecommended": false
+            },
+            {
+              "title": "Store Only on Price Change",
+              "description": "Compare new price against last stored price. Only write to DB if price changed. Reduces writes by ~95% (prices rarely change). The last_checked timestamp is updated in Redis (not DB) on every check. Price history accurately reflects when prices changed, not when they were checked.",
+              "tradeoff": "Requires reading last price before every write; Redis must store current price for fast",
+              "isRecommended": true
+            },
+            {
+              "title": "comparison.",
+              "description": "",
+              "tradeoff": "",
+              "isRecommended": false
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Alert API",
+            "responsibility": "Accepts user alerts; creates TrackedProduct if new URL; stores alert in"
+          },
+          {
+            "name": "Crawl Scheduler",
+            "responsibility": "Manages priority queue (Redis sorted set); dispatches crawl jobs to workers"
+          },
+          {
+            "name": "Crawler Workers",
+            "responsibility": "Fetch product pages; extract prices (CSS selectors / ML extraction); publish to Kafka"
+          },
+          {
+            "name": "Price Processor",
+            "responsibility": "Consumes Kafka; compares with current price; writes to DB if changed; triggers alerts"
+          },
+          {
+            "name": "Alert Service",
+            "responsibility": "Checks if new price triggers any user alerts; sends notifications"
+          },
+          {
+            "name": "Price DB (TimescaleDB)",
+            "responsibility": "Time-series store for price history; hypertable partitioned by time"
+          },
+          {
+            "name": "Redis",
+            "responsibility": "Priority queue for crawl scheduling; current price cache for change detection"
+          },
+          {
+            "name": "Notification Service",
+            "responsibility": "Sends email/push/SMS alerts via SendGrid/FCM/Twilio"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Anti-Bot Detection",
+          "content": "Retailers use bot detection (Cloudflare, PerimeterX) to block crawlers. Mitigation strategies: (1) Rotate user\nagents and IP addresses (residential proxy pool), (2) Respect crawl delays from robots.txt, (3) Use headless\nChrome for JavaScript-rendered pages, (4) Randomize crawl timing to avoid patterns. For retailers with strict\nbot detection, use their official price APIs if available."
+        },
+        {
+          "title": "3. Price History Storage",
+          "content": "Price history is stored in TimescaleDB (PostgreSQL extension for time-series data). The hypertable is\npartitioned by time (monthly chunks). Queries for price history over a date range are efficient because only\nrelevant time chunks are scanned. Old data is compressed using TimescaleDB's native compression (10x\ncompression ratio for price data)."
+        },
+        {
+          "title": "4. Alert Evaluation",
+          "content": "When a price change is detected, the Price Processor queries the Alert DB for all active alerts for that product\nwhere target_price >= new_price. For each matching alert, it publishes a notification event to Kafka. The Alert\nService consumes the event and sends the notification via the user's preferred channel. Alerts are deactivated\nafter triggering (one-time alerts) or kept active (recurring alerts)."
+        },
+        {
+          "title": "5. Handling Retailer Rate Limits",
+          "content": "Each retailer has a different rate limit tolerance. The Crawl Scheduler maintains a per-retailer rate limiter (token\nbucket in Redis). Crawl jobs for a retailer are only dispatched when a token is available. If a crawler receives a\n429 (Too Many Requests) response, it backs off exponentially and returns the product to the queue with a\n\ndelayed next_check_time."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Price Tracking — System Design\nCrawl · Detect · Alert · History\nUser\nset alert\nAlert API\nCrawl Sched\nRedis priority Q\nRedis\ncurrent prices\nCrawlers\nfetch+extract\nKafka\nprice events\nPrice Proc\nchange detect\nTimescaleDB\nprice history\nNotif Svc\nemail/push/SMS\nPOST /alerts\nadd to queue\ndispatch job\npublish price\n consume\ncompare price\nwrite history\ntrigger alert\nnotify user",
+      "keyFlows": [
+        "① User sets alert → Alert API → add product to Redis priority queue",
+        "② Crawl Scheduler dispatches jobs → Crawlers fetch product pages",
+        "③ Crawlers extract price → publish to Kafka",
+        "④ Price Processor: compare with Redis current price → write to TimescaleDB if changed",
+        "⑤ Price drop detected → check alerts → Notification Svc → email/push/SMS"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study TimescaleDB: how it extends PostgreSQL with hypertables, automatic time-based\npartitioning, and native compression for time-series data.\nExpert Note: Learn about web scraping at scale: how to handle JavaScript-rendered pages with\nPlaywright/Puppeteer, how to manage a residential proxy pool, and how to detect and handle bot detection\nsystems.\nExpert Note: Understand Schema.org structured data: how JSON-LD and microdata embed\nmachine-readable product information in HTML, and how to extract it reliably.\nExpert Note: Study token bucket rate limiting: how to implement a distributed token bucket using Redis,\nand how to handle burst traffic while respecting average rate limits.\nExpert Note: Learn about price elasticity and dynamic pricing: how retailers use algorithmic pricing to\nrespond to competitor prices, and how this affects the frequency of price changes."
+    }
+  }
+}

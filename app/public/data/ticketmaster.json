@@ -1,0 +1,179 @@
+{
+  "id": "ticketmaster",
+  "name": "Ticketmaster",
+  "overview": "Ticketmaster is an event ticketing platform where users can browse events, select seats, and purchase tickets.\nThe system must handle massive traffic spikes when popular events go on sale (millions of users\nsimultaneously), prevent overselling (each seat sold exactly once), provide a fair queuing system, and process\npayments securely. The seat selection and purchase flow requires strong consistency to prevent double-selling.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Browse events and view seat maps",
+        "Select and hold seats for 10 minutes during checkout",
+        "Purchase tickets with payment processing",
+        "Prevent overselling (each seat sold exactly once)",
+        "Virtual waiting room for high-demand events"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 100k concurrent users per event on sale without degradation",
+        "Seat reservation must be strongly consistent — each seat sold exactly once under any concurrency",
+        "Seat hold latency <200ms; reservation TTL enforced precisely at 10 minutes",
+        "99.99% availability during on-sale windows — downtime during a sale is catastrophic",
+        "Virtual waiting room must absorb traffic spikes from near-zero to 100k users in seconds",
+        "Seat map availability updates visible to users within 5 seconds of a hold or release"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Event",
+          "schema": "{\n  event_id: UUID,\n  name: string,\n  venue_id: string,\n  date: timestamp,\n  on_sale_time: timestamp,\n\n  total_seats: int,\n  available_seats: int\n}"
+        },
+        {
+          "name": "Seat",
+          "schema": "{\n  seat_id: UUID,\n  event_id: UUID,\n  section: string,\n  row: string,\n  number: int,\n  price: decimal,\n  status: enum(AVAILABLE|HELD|SOLD)\n}"
+        },
+        {
+          "name": "Reservation",
+          "schema": "{\n  reservation_id: UUID,\n  user_id: string,\n  seat_ids: [UUID],\n  expires_at: timestamp,  // 10 minutes from creation\n  status: enum(ACTIVE|COMPLETED|EXPIRED)\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/reservations",
+          "description": "Hold seats",
+          "request": "{ event_id, seat_ids }",
+          "response": "{ reservation_id, expires_at }\nResponse 409: { error: 'Seats not available', unavailable_seat_ids }"
+        },
+        {
+          "method": "POST",
+          "path": "/v1/reservations/{reservation_id}/purchase",
+          "description": "",
+          "request": "{ payment_method_id }",
+          "response": "{ order_id, tickets: [{ seat_id, ticket_id, qr_code }] }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Seat Reservation (Preventing Overselling)",
+          "approaches": [
+            {
+              "title": "Optimistic Locking",
+              "description": "Read seat status, check if AVAILABLE, update to HELD with version check. Under high concurrency (100k users competing for 1000 seats), most transactions fail and retry. Retry storms overwhelm the DB.",
+              "tradeoff": "Retry storms under high concurrency; poor performance.",
+              "isRecommended": false
+            },
+            {
+              "title": "Pessimistic Locking (SELECT FOR UPDATE)",
+              "description": "Lock seat rows during reservation. Only one transaction can hold the lock at a time. Correct but serializes all reservations. At 100k concurrent users, lock wait times become unacceptable.",
+              "tradeoff": "Serialized access; high lock wait times under load.",
+              "isRecommended": false
+            },
+            {
+              "title": "Redis Atomic Seat Reservation",
+              "description": "Store seat status in Redis. Use a Lua script to atomically check-and-set seat status from AVAILABLE to HELD. Redis handles 100k ops/sec. The Lua script is atomic (no race conditions). Held seats have a TTL of 10 minutes (auto-release on expiry). Seat status is asynchronously persisted to PostgreSQL via Kafka. Redis is the source of truth during the sale.",
+              "tradeoff": "Redis failure requires fallback; async persistence means brief inconsistency window.",
+              "isRecommended": true
+            }
+          ]
+        },
+        {
+          "subTopic": "Virtual Waiting Room",
+          "approaches": [
+            {
+              "title": "No Queue (First Come First Served)",
+              "description": "Allow all users to access the ticketing page simultaneously. 100k concurrent users overwhelm the seat reservation system. Users with faster internet connections have an unfair advantage.",
+              "tradeoff": "System overload; unfair to users on slower connections.",
+              "isRecommended": false
+            },
+            {
+              "title": "Virtual Waiting Room with Position Queue",
+              "description": "When an event goes on sale, users are placed in a virtual waiting room. A queue service assigns each user a random position. Users are admitted to the ticketing page in batches (e.g., 1000 users every 30 seconds). Randomized queue position is fairer than first-come-first-served. The ticketing system only handles 1000 concurrent users at a time, preventing overload. Users receive a JWT token when admitted; the token is required to access the seat selection page.",
+              "tradeoff": "Users may wait a long time; queue position randomization may feel unfair to users who joined",
+              "isRecommended": true
+            },
+            {
+              "title": "early.",
+              "description": "",
+              "tradeoff": "",
+              "isRecommended": false
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Event Service",
+            "responsibility": "Manages event and seat inventory; serves seat maps"
+          },
+          {
+            "name": "Waiting Room Service",
+            "responsibility": "Manages virtual queue; admits users in batches; issues admission tokens"
+          },
+          {
+            "name": "Reservation Service",
+            "responsibility": "Handles seat holds; uses Redis Lua scripts for atomic reservation"
+          },
+          {
+            "name": "Payment Service",
+            "responsibility": "Processes payments; integrates with Stripe/Braintree"
+          },
+          {
+            "name": "Ticket Service",
+            "responsibility": "Generates tickets (QR codes) after successful payment"
+          },
+          {
+            "name": "Redis",
+            "responsibility": "Seat status (AVAILABLE/HELD/SOLD); waiting room queue; reservation"
+          },
+          {
+            "name": "PostgreSQL",
+            "responsibility": "Persistent seat inventory; order history; ticket records"
+          },
+          {
+            "name": "Kafka",
+            "responsibility": "Seat status changes for async persistence; payment events"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Reservation Expiry",
+          "content": "Held seats are automatically released after 10 minutes if not purchased. Redis TTL handles this automatically:\nwhen the TTL expires, the seat status key is deleted, making the seat available again. A Kafka event is\n\npublished when a reservation expires, triggering a notification to the user and updating the PostgreSQL seat\nstatus. The seat map polling picks up the newly available seats within 5 seconds."
+        },
+        {
+          "title": "3. Handling the On-Sale Spike",
+          "content": "When a popular event goes on sale, traffic spikes from near-zero to 100k concurrent users in seconds. The\nsystem handles this with: (1) Auto-scaling: API servers scale out based on CPU/request rate, (2) CDN caching:\nthe event page and seat map are cached at CDN edge, (3) Virtual waiting room: limits concurrent users to\n1000, (4) Redis cluster: pre-scaled for the expected load, (5) Read replicas: seat availability queries go to\nPostgreSQL read replicas."
+        },
+        {
+          "title": "4. Ticket Generation",
+          "content": "After successful payment, the Ticket Service generates a unique QR code for each ticket. The QR code\nencodes: ticket_id, event_id, seat_id, and a cryptographic signature (HMAC-SHA256 with a secret key). The\nvenue's access control system validates the QR code by verifying the signature and checking the ticket_id\nagainst the database. This prevents ticket forgery."
+        },
+        {
+          "title": "5. Scalability for Multiple Simultaneous Events",
+          "content": "Ticketmaster handles thousands of events simultaneously. Each event's seat inventory is isolated in Redis (key\nprefix = event_id). Events with high demand get dedicated Redis instances. The Waiting Room Service is\nevent-specific: each event has its own queue. This isolation prevents one popular event from affecting others."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Ticketmaster — System Design\nQueue · Select · Reserve · Purchase\nUser\nticket buyer\nWaiting Room\nReserve Svc\nRedis\nseat status+TTL\nKafka\nseat events\nPayment Svc\nStripe\nTicket Svc\nQR code gen\nPostgreSQL\norders+tickets\nCDN\nseat map cache\njoin queue\nadmit token\nhold seats\nLua SETNX\nseat event\npersist status\npurchase\ngen ticket\nstore ticket\nGET seat map",
+      "keyFlows": [
+        "① User joins virtual waiting room → admitted in batches (1000/30s)",
+        "② User selects seats → Reservation Svc → Redis Lua (atomic HELD)",
+        "③ Held seats have 10-min TTL → auto-release on expiry",
+        "④ User purchases → Payment Svc → Ticket Svc generates QR code",
+        "⑤ Seat map served from CDN; availability polled every 5s"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study Redis TTL-based expiration: how Redis handles key expiration (lazy expiration + active\nexpiration), and how to use keyspace notifications to trigger actions on key expiry.\nExpert Note: Learn about virtual waiting room design: how Ticketmaster and other ticketing platforms\nimplement fair queuing, the trade-off between randomized and FIFO queue positions.\nExpert Note: Understand seat map rendering: how SVG-based seat maps work, how to efficiently update\nseat availability for thousands of seats without re-rendering the entire map.\nExpert Note: Study HMAC-SHA256 for ticket authentication: how to generate and verify cryptographic\nsignatures, and why this is more secure than storing ticket validity in a database.\nExpert Note: Learn about the thundering herd problem in ticketing: how millions of users simultaneously\nhitting a sale page can overwhelm backend systems, and how CDN caching and rate limiting mitigate this."
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "references": [
+    {
+      "id": "cheat-sheet",
+      "name": "Cheat Sheet"
+    },
+    {
+      "id": "common-patterns",
+      "name": "Common Patterns"
+    },
+    {
+      "id": "follow-up-questions",
+      "name": "Follow-Up Questions"
+    }
+  ]
+}

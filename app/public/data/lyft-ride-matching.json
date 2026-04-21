@@ -1,0 +1,160 @@
+{
+  "id": "lyft-ride-matching",
+  "name": "Lyft Ride Matching",
+  "overview": "The Ride Matching Service pairs ride requests with available drivers. It must find the best driver for each\nrequest within 30 seconds, considering proximity, driver rating, vehicle type, and surge pricing zones. The\nservice must handle thousands of simultaneous ride requests, prevent double-booking of drivers, and gracefully\nhandle driver cancellations by re-matching the rider. Matching quality directly impacts rider wait time and driver\nutilization.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Match rider request to best available driver within 30 seconds",
+        "Consider proximity, driver rating, vehicle type",
+        "Prevent double-booking (one driver per ride at a time)",
+        "Re-match if driver cancels within 2 minutes",
+        "Matching decision in <500ms"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 100k simultaneous ride requests",
+        "Matching decision within 30 seconds; matching computation <500ms",
+        "Strong consistency for driver assignment — no double-booking under any concurrency",
+        "99.99% availability — matching outages directly prevent rides from starting",
+        "Re-matching on driver cancellation must complete within 30 seconds",
+        "Horizontally scalable: matching throughput scales with Kafka partitions and worker instances"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "RideRequest",
+          "schema": "{\n  request_id: UUID,\n  rider_id: string,\n  pickup: { lat, lng },\n  dropoff: { lat, lng },\n  vehicle_type: enum(STANDARD|XL|LUX),\n\n  status: enum(SEARCHING|MATCHED|CANCELLED|COMPLETED),\n  created_at: timestamp,\n  matched_driver_id: string (nullable)\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/v1/rides",
+          "description": "Request ride",
+          "request": "{ rider_id, pickup, dropoff, vehicle_type }",
+          "response": "{ request_id, status: 'SEARCHING', estimated_wait_minutes }"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/rides/{request_id}/status",
+          "description": "",
+          "request": "",
+          "response": "{ status, driver_id?, driver_location?, eta_minutes? }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Matching Algorithm",
+          "approaches": [
+            {
+              "title": "Nearest Driver (Greedy)",
+              "description": "Always assign the geographically nearest available driver. Simple but suboptimal. The nearest driver may have a low rating or be heading away from the pickup. Doesn't consider driver utilization across the city.",
+              "tradeoff": "Suboptimal matching quality; ignores driver rating and direction.",
+              "isRecommended": false
+            },
+            {
+              "title": "Scoring Function",
+              "description": "Score each candidate driver: score = w1×(1/distance) + w2×rating + w3×direction_alignment. Better quality than pure proximity. But evaluating all drivers in a large radius is expensive. Requires tuning weights.",
+              "tradeoff": "Expensive to evaluate all candidates; weight tuning is empirical.",
+              "isRecommended": false
+            },
+            {
+              "title": "Two-Phase Matching with Distributed Lock",
+              "description": "Phase 1: Find top 5 candidate drivers using Redis GEORADIUS (fast proximity filter). Phase 2: Score candidates using the scoring function. Assign the highest-scoring driver. Driver assignment uses a Redis distributed lock (SETNX on driver_id) to prevent double-booking. If the lock fails (driver already assigned), move to the next candidate. If no driver found in 30 seconds, expand search radius by 50% and retry.",
+              "tradeoff": "Redis lock adds latency; lock TTL must be tuned; expanding radius may match suboptimal",
+              "isRecommended": true
+            },
+            {
+              "title": "drivers.",
+              "description": "Handling Driver Cancellations No Re-matching If a driver cancels, the rider must submit a new request. Poor user experience. Rider loses their place in the queue.",
+              "tradeoff": "Poor UX; rider must restart the process.",
+              "isRecommended": false
+            },
+            {
+              "title": "Automatic Re-matching with Priority Queue",
+              "description": "If a driver cancels within 2 minutes of matching, the ride request is re-queued with HIGH priority. The matching service processes HIGH priority requests first. The rider is notified of the cancellation and shown a new ETA. Drivers who cancel frequently are penalized in the scoring function.",
+              "tradeoff": "Re-matching adds wait time; rider experience degrades with multiple cancellations.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Ride Request API",
+            "responsibility": "Accepts ride requests; validates; publishes to Kafka matching queue"
+          },
+          {
+            "name": "Matching Service",
+            "responsibility": "Consumes ride requests; queries Redis Geo for candidates; scores and assigns"
+          },
+          {
+            "name": "Redis Geo",
+            "responsibility": "Geospatial index of available drivers; updated by Driver Location Service"
+          },
+          {
+            "name": "Redis Locks",
+            "responsibility": "Distributed locks per driver_id to prevent double-booking"
+          },
+          {
+            "name": "Kafka",
+            "responsibility": "Ride request queue (HIGH/NORMAL priority); driver status events"
+          },
+          {
+            "name": "Ride DB (PostgreSQL)",
+            "responsibility": "Stores ride records; source of truth for ride state"
+          },
+          {
+            "name": "Notification Service",
+            "responsibility": "Notifies driver of new ride request; notifies rider of match"
+          },
+          {
+            "name": "ETA Service",
+            "responsibility": "Computes driver-to-pickup ETA for matching score"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Driver Acceptance Rate",
+          "content": "Drivers can accept or reject ride requests. If a driver rejects, the matching service moves to the next candidate.\nTo minimize rejection rates, the matching service only sends requests to drivers who are likely to accept (based\non historical acceptance rate, current location relative to pickup, and time since last ride). Drivers with <80%\nacceptance rate are deprioritized in the scoring function."
+        },
+        {
+          "title": "3. Surge Zone Awareness",
+          "content": "During surge pricing, the matching service prioritizes drivers in surge zones to maximize driver earnings and\nreduce wait times. The scoring function adds a surge_bonus term for drivers in high-demand zones. This\nincentivizes drivers to move to surge zones, which helps balance supply and demand."
+        },
+        {
+          "title": "4. Batch Matching for Efficiency",
+          "content": "Instead of matching one ride at a time, the matching service batches ride requests that arrive within a 500ms\nwindow and solves a global assignment problem (Hungarian algorithm) to maximize total matching quality. This\nis more efficient than greedy matching and reduces the number of Redis lock contentions."
+        },
+        {
+          "title": "5. Fallback to Manual Dispatch",
+          "content": "If no driver is found after 3 matching attempts (90 seconds), the ride request is escalated to a manual dispatch\nqueue where a human operator can intervene. This handles edge cases like remote pickup locations or unusual\nvehicle type requests."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Lyft Ride Matching — System Design\nRequest · Score · Lock · Assign\nRider\nmobile app\nRide API\nKafka\nride requests\nMatching Svc\n2-phase match\nRedis Geo\navailable drivers\nRedis Locks\ndriver_id locks\nETA Service\npickup ETA\nNotif Svc\ndriver/rider push\nRide DB\nPostgreSQL\nPOST /rides\nenqueue\nconsume\nGEORADIUS\nSETNX lock\ncalc ETA\nnotify match\n write ride",
+      "keyFlows": [
+        "① Rider requests ride → Ride API → Kafka matching queue",
+        "② Matching Svc: GEORADIUS → top 5 candidates from Redis Geo",
+        "③ Score candidates (proximity + rating + ETA); acquire Redis lock on driver",
+        "④ Lock acquired → write match to Ride DB → notify driver + rider",
+        "⑤ Driver cancels → re-queue with HIGH priority → re-match"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study the Hungarian algorithm for optimal assignment: how it solves the assignment problem\nin O(n^3) time, and how it's applied to batch ride matching.\nExpert Note: Learn about Redis distributed locks: the SETNX + EXPIRE pattern, the Redlock algorithm for\nmulti-node safety, and why lock TTL must exceed the critical section duration.\n\nExpert Note: Understand the explore-exploit trade-off in matching: how to balance matching quality (exploit\nbest driver) with exploration (try new drivers to learn their acceptance patterns).\nExpert Note: Study Kafka consumer group rebalancing: how partition assignment changes when matching\nservice instances are added/removed, and how to minimize rebalancing latency.\nExpert Note: Learn about the two-sided marketplace dynamics in ride-sharing: how driver and rider\nsupply/demand imbalances affect matching quality, and how surge pricing restores equilibrium."
+    }
+  }
+}

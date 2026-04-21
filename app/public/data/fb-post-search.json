@@ -1,0 +1,159 @@
+{
+  "id": "fb-post-search",
+  "name": "FB Post Search",
+  "overview": "Facebook Post Search allows users to search for posts by keyword, author, date range, and other filters. The\nsystem must index billions of posts in near-real-time (new posts searchable within 30 seconds), support full-text\nsearch with relevance ranking, enforce privacy (users can only see posts they have permission to view), and\nserve search queries with <500ms latency. The system handles 1B+ posts and 100M search queries per day.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Full-text search across post content",
+        "Filter by author, date range, post type",
+        "Privacy enforcement (only show posts visible to searcher)",
+        "New posts indexed within 30 seconds",
+        "Search results ranked by relevance + recency"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 100M queries/day across 1B+ posts",
+        "Search query latency <500ms p99",
+        "New posts must be searchable within 30 seconds of creation",
+        "Privacy enforcement must be correct — never show posts the searcher cannot view",
+        "99.9% availability; brief search degradation is tolerable over incorrect privacy results",
+        "Index must scale horizontally; adding new shards should not require downtime"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Post Index Document",
+          "schema": "{\n  post_id: string,\n  author_id: string,\n  content: string,\n  tokens: [string],  // stemmed, lowercased\n  created_at: timestamp,\n  privacy: enum(PUBLIC|FRIENDS|PRIVATE),\n  author_friend_ids: [string],  // for privacy filtering\n  engagement_score: float\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/v1/search/posts",
+          "description": "",
+          "request": "",
+          "response": "{ posts: [{ post_id, author, snippet, created_at, score }],\n    total_count, next_cursor }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Search Index Technology",
+          "approaches": [
+            {
+              "title": "MySQL FULLTEXT Index",
+              "description": "Use MySQL's built-in FULLTEXT index for post content search. MySQL FULLTEXT is limited to single-table searches, doesn't support complex ranking, and doesn't scale to 1B+ posts. Query latency degrades significantly at scale.",
+              "tradeoff": "Doesn't scale to billions of posts; limited ranking capabilities.",
+              "isRecommended": false
+            },
+            {
+              "title": "Elasticsearch",
+              "description": "Use Elasticsearch (built on Lucene) for full-text indexing. Supports inverted index, BM25 ranking, and complex queries. Elasticsearch handles billions of documents with horizontal sharding. Supports near-real-time indexing (1-second refresh interval).",
+              "tradeoff": "Elasticsearch is operationally complex; requires careful shard sizing; not designed for privacy",
+              "isRecommended": false
+            },
+            {
+              "title": "filtering at scale.",
+              "description": "Custom Inverted Index + Privacy Layer [RECOMMENDED] Build a custom inverted index optimized for Facebook's privacy model. Each posting list entry includes the post's privacy level and author_id. Privacy filtering is applied during index traversal (not post-query), avoiding fetching and discarding large result sets. The index is sharded by term hash across 100 index nodes. Each node stores a segment of the inverted index in RocksDB for fast disk-based lookups.",
+              "tradeoff": "Custom index requires significant engineering investment; harder to maintain than off-the-shelf",
+              "isRecommended": false
+            },
+            {
+              "title": "solutions.",
+              "description": "Real-Time Indexing Batch Indexing (Hourly) Run a batch job every hour to index new posts. 30-minute average delay is unacceptable for search freshness. Users expect to find posts they just made.",
+              "tradeoff": "Too slow; poor search freshness.",
+              "isRecommended": false
+            },
+            {
+              "title": "Synchronous Indexing on Post Creation",
+              "description": "Index the post synchronously as part of the post creation API call. Adds latency to post creation. If the index is unavailable, post creation fails. Tight coupling between post service and search index.",
+              "tradeoff": "Tight coupling; index unavailability blocks post creation.",
+              "isRecommended": false
+            },
+            {
+              "title": "Async Indexing via Kafka",
+              "description": "Post creation publishes an event to Kafka. An indexing service consumes the event, processes the post (tokenization, stemming, privacy metadata), and writes to the search index. Post creation is decoupled from indexing. Kafka provides buffering during index maintenance. Target: <30 second indexing latency. The indexing service is idempotent (uses post_id as document ID) so Kafka retries are safe.",
+              "tradeoff": "30-second indexing delay; Kafka adds operational complexity.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Search API",
+            "responsibility": "Parses query, applies filters, calls Index Service, enforces privacy, ranks results"
+          },
+          {
+            "name": "Index Service",
+            "responsibility": "Consumes Kafka post events; tokenizes/stems content; writes to inverted index"
+          },
+          {
+            "name": "Inverted Index (RocksDB)",
+            "responsibility": "Sharded inverted index; posting lists include privacy metadata; 100 shards"
+          },
+          {
+            "name": "Privacy Service",
+            "responsibility": "Checks if searcher can view each result post; uses social graph for"
+          },
+          {
+            "name": "Ranking Service",
+            "responsibility": "Scores results using BM25 + recency + engagement; returns top K"
+          },
+          {
+            "name": "Post DB",
+            "responsibility": "Source of truth for post content; used for snippet generation"
+          },
+          {
+            "name": "Kafka",
+            "responsibility": "Streams post creation/deletion events to Index Service"
+          },
+          {
+            "name": "Query Cache (Redis)",
+            "responsibility": "Caches results for popular queries; TTL = 60 seconds"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Relevance Ranking",
+          "content": "Results are ranked using a combination of: (1) BM25 text relevance score (term frequency × inverse document\nfrequency), (2) recency score (exponential decay: score × e^(-age_hours/168)), (3) engagement score\n(normalized likes + comments), (4) social proximity (posts from friends ranked higher). These signals are\ncombined using a learned linear model trained on click-through data."
+        },
+        {
+          "title": "3. Index Sharding",
+          "content": "The inverted index is sharded by term hash. A query for 'machine learning' fans out to all 100 shards (each\nshard may have posting list entries for these terms). Each shard returns its top K results. The Search API\nmerges and re-ranks the results from all shards. This scatter-gather pattern is standard for distributed search\nsystems."
+        },
+        {
+          "title": "4. Handling Post Deletions",
+          "content": "When a post is deleted, a deletion event is published to Kafka. The Index Service processes the deletion by\nmarking the document as deleted in the index (tombstone). Deleted documents are filtered out during query\nexecution. Periodic index compaction removes tombstoned documents and reclaims space. This is the same\napproach used by Lucene/Elasticsearch."
+        },
+        {
+          "title": "5. Query Caching",
+          "content": "Popular queries (e.g., 'COVID vaccine') are cached in Redis with a 60-second TTL. The cache key includes the\nquery text, filters, and user's privacy tier (PUBLIC vs. FRIENDS). This avoids re-executing expensive\nscatter-gather queries for the same popular search. Cache hit rate for top 1000 queries is ~40%, significantly\nreducing index load."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Facebook Post Search — System Design\nIndex · Query · Filter · Rank\nUser\nsearch query\nSearch API\nKafka\npost events\nIndex Service\ntokenize+stem\nInverted Index\nRocksDB shards\nPrivacy Svc\nfriend check\nRanking Svc\nBM25+recency\nQuery Cache\nRedis 60s TTL\nPost DB\nsnippets\nGET /search\ncache check\n scatter-gather\nprivacy filter\nrank results\nfetch snippets\nconsume\nindex doc",
+      "keyFlows": [
+        "① Post created → Kafka → Index Service → tokenize → write to Inverted Index",
+        "② Search query → Search API → check Query Cache (Redis)",
+        "③ Cache miss: scatter-gather to all 100 Inverted Index shards",
+        "④ Privacy Svc filters results (PUBLIC free; FRIENDS checks friend list)",
+        "⑤ Ranking Svc scores (BM25 + recency + engagement) → return top K"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study the BM25 ranking algorithm: how it improves on TF-IDF by normalizing for document\nlength and term saturation, and why it's the default ranking function in Elasticsearch and Lucene.\n\nExpert Note: Learn about inverted index construction: how tokenization, stemming, and stop-word removal\nwork, and how posting lists are compressed using delta encoding and variable-byte encoding.\nExpert Note: Understand scatter-gather query execution in distributed search: how fan-out to all shards\nworks, how results are merged, and how to handle slow shards (hedged requests).\nExpert Note: Study Facebook's privacy model in depth: the difference between PUBLIC, FRIENDS,\nFRIENDS_OF_FRIENDS, and CUSTOM privacy levels, and how they affect search indexing.\nExpert Note: Learn about index compaction in LSM-tree-based stores (RocksDB): how SSTables are\nmerged, how tombstones are cleaned up, and the write amplification trade-off.\n\nFacebook Post Search"
+    }
+  }
+}

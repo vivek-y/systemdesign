@@ -1,0 +1,175 @@
+{
+  "id": "news-aggregator",
+  "name": "News Aggregator",
+  "overview": "A news aggregator crawls thousands of news sources, deduplicates similar articles, clusters related stories,\nand serves a personalized news feed to users. The system must continuously crawl RSS feeds and news APIs,\nprocess and index articles in near-real-time, detect duplicate and near-duplicate articles across sources, and\nrank articles by relevance and recency for each user. Think Google News or Apple News.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Crawl 10k news sources every 15 minutes",
+        "Deduplicate near-identical articles across sources",
+        "Cluster related articles into story groups",
+        "Serve personalized news feed per user",
+        "Full-text search across all articles"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 50M users with 1M articles ingested per day",
+        "New articles searchable and appearing in feeds within 5 minutes of crawl",
+        "Feed load latency <200ms p99",
+        "99.9% availability; brief feed staleness is acceptable over downtime",
+        "Crawl 10k sources every 15 minutes without overloading source servers (politeness)",
+        "Deduplication must handle near-identical articles across sources with <0.1% false positive rate"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Article",
+          "schema": "{\n  article_id: UUID,\n  source_id: string,\n  url: string,\n  title: string,\n  content: string,\n  published_at: timestamp,\n  crawled_at: timestamp,\n  category: string,\n  simhash: int64,  // for deduplication\n  cluster_id: UUID  // story cluster\n}"
+        },
+        {
+          "name": "StoryCluster",
+          "schema": "{\n  cluster_id: UUID,\n  headline: string,  // representative title\n  article_count: int,\n  first_published: timestamp,\n  last_updated: timestamp,\n  categories: [string]\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/v1/feed",
+          "description": "",
+          "request": "",
+          "response": "{ stories: [{ cluster_id, headline, article_count, top_sources, published_at\n}], next_cursor }"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/stories/{cluster_id}",
+          "description": "",
+          "request": "",
+          "response": "{ cluster_id, headline, articles: [{ article_id, source, title, url,\npublished_at }] }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Crawling Strategy",
+          "approaches": [
+            {
+              "title": "Single-Threaded Crawler",
+              "description": "A single process crawls all 10k sources sequentially. At 15-minute intervals, a single crawler can visit ~667 sources/minute. With average crawl time of 2 seconds/source, this takes 333 minutes — far too slow.",
+              "tradeoff": "Too slow for 10k sources at 15-minute intervals.",
+              "isRecommended": false
+            },
+            {
+              "title": "Distributed Crawler with Politeness",
+              "description": "Multiple crawler workers pull source URLs from a queue. Each worker respects robots.txt and rate limits (max 1 req/sec per domain). 100 workers can crawl 10k sources in 100 seconds. Politeness prevents overloading news sites.",
+              "tradeoff": "Requires managing crawler fleet; robots.txt compliance adds complexity.",
+              "isRecommended": false
+            },
+            {
+              "title": "Distributed Crawler + Change Detection",
+              "description": "Same distributed crawler but with change detection: each source's last-crawled ETag/Last-Modified header is stored. On re-crawl, send If-None-Match/If-Modified-Since headers. Only process sources that have changed. Reduces processing load by ~70% (most sources don't change every 15 minutes). RSS feeds are preferred over full HTML crawling — they provide structured article metadata.",
+              "tradeoff": "ETag/Last-Modified not supported by all sources; RSS feeds may lag behind website updates.",
+              "isRecommended": true
+            }
+          ]
+        },
+        {
+          "subTopic": "Deduplication",
+          "approaches": [
+            {
+              "title": "Exact URL Match",
+              "description": "Deduplicate articles by URL. The same article syndicated to multiple sites has different URLs. Doesn't catch near-duplicates (same story, different wording).",
+              "tradeoff": "Misses syndicated content and near-duplicates.",
+              "isRecommended": false
+            },
+            {
+              "title": "TF-IDF Cosine Similarity",
+              "description": "Compute TF-IDF vectors for each article. Articles with cosine similarity >0.9 are duplicates. Accurate but O(N^2) comparison is infeasible for 1M articles/day.",
+              "tradeoff": "O(N^2) comparison is infeasible at scale.",
+              "isRecommended": false
+            },
+            {
+              "title": "SimHash for Near-Duplicate Detection",
+              "description": "Compute a 64-bit SimHash fingerprint for each article. Articles with Hamming distance <3 are near-duplicates. SimHash comparison is O(1) per pair. Use a hash table of SimHash values for fast lookup. For clustering, use MinHash + LSH (Locality Sensitive Hashing) to group related articles without comparing all pairs.",
+              "tradeoff": "SimHash has false positives for very short articles; LSH requires tuning band/row parameters.",
+              "isRecommended": true
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Crawler Service",
+            "responsibility": "Distributed crawlers; respects robots.txt; sends conditional requests; publishes raw articles to Kafka"
+          },
+          {
+            "name": "Article Processor",
+            "responsibility": "Consumes Kafka; extracts text; computes SimHash; deduplicates; assigns to cluster"
+          },
+          {
+            "name": "Clustering Service",
+            "responsibility": "Groups related articles using MinHash+LSH; maintains story clusters"
+          },
+          {
+            "name": "Search Index",
+            "responsibility": "(Elasticsearch) Full-text index of all articles; supports keyword and semantic search"
+          },
+          {
+            "name": "Feed Service",
+            "responsibility": "Serves personalized feeds; ranks stories by user interest + recency"
+          },
+          {
+            "name": "Article DB (Cassandra)",
+            "responsibility": "Stores article metadata; partition key = source_id"
+          },
+          {
+            "name": "Cluster DB (PostgreSQL)",
+            "responsibility": "Stores story clusters and article-cluster mappings"
+          },
+          {
+            "name": "User Interest Model",
+            "responsibility": "Tracks user reading history; computes interest scores per category/topic"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Story Clustering",
+          "content": "Related articles (same story, different sources) are grouped into clusters using MinHash + LSH. MinHash\napproximates Jaccard similarity between article shingle sets. LSH groups articles with high Jaccard similarity\ninto the same bucket without comparing all pairs. New articles are assigned to the most similar existing cluster\n(if similarity >0.7) or create a new cluster. Clusters are merged when two clusters become highly similar."
+        },
+        {
+          "title": "3. Personalized Feed Ranking",
+          "content": "The Feed Service ranks story clusters for each user using: (1) User interest score (based on reading history per\ncategory/topic), (2) Story freshness (exponential decay by age), (3) Story importance (number of sources\ncovering it), (4) Diversity (avoid showing too many stories from the same category). The ranking is computed at\nquery time using pre-computed user interest vectors stored in Redis."
+        },
+        {
+          "title": "4. Crawl Scheduling",
+          "content": "Not all sources need to be crawled at the same frequency. High-frequency sources (major newspapers, wire\nservices) are crawled every 5 minutes. Low-frequency sources (blogs, niche publications) are crawled every 60\nminutes. Crawl frequency is dynamically adjusted based on the source's historical update rate: if a source rarely\nupdates, its crawl frequency is reduced."
+        },
+        {
+          "title": "5. Content Extraction",
+          "content": "Raw HTML pages must be converted to clean article text. The Article Processor uses Mozilla's Readability\nalgorithm (the same one used by Firefox Reader View) to extract the main article content, removing navigation,\nads, and boilerplate. For RSS feeds, the content is already structured. Extracted text is stored in Cassandra;\nonly the SimHash and metadata are stored in the search index."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "News Aggregator — System Design\nCrawl · Deduplicate · Cluster · Serve\nUser\nnews reader\nFeed Svc\nCrawler Svc\ndistributed\nKafka\nraw articles\nArticle Proc\nSimHash+dedup\nCluster Svc\nMinHash+LSH\nElasticsearch\nfull-text index\nCassandra\narticle store\nPostgreSQL\nclusters\nGET /feed\npublish article\nconsume\nassign cluster\nindex article\nstore article\nupdate cluster\nread clusters\nsearch",
+      "keyFlows": [
+        "① Crawler fetches RSS/HTML from 10k sources → Kafka",
+        "② Article Processor: extract text → compute SimHash → deduplicate",
+        "③ Cluster Svc: MinHash+LSH → assign to story cluster or create new",
+        "④ Article indexed in Elasticsearch; metadata stored in Cassandra",
+        "⑤ Feed Svc ranks clusters by user interest + recency → serve feed"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study SimHash in depth: the mathematical proof that Hamming distance between SimHashes\napproximates cosine similarity between TF-IDF vectors, and how to efficiently find near-duplicates using\nhash tables.\nExpert Note: Learn about MinHash and LSH: how MinHash approximates Jaccard similarity, how LSH\nbands and rows are chosen to control false positive/negative rates, and how to implement LSH for\ndocument clustering.\nExpert Note: Understand web crawling at scale: how to implement politeness (rate limiting per domain),\nhow to handle JavaScript-rendered pages (headless Chrome), and how to detect and avoid crawler traps.\nExpert Note: Study the Readability algorithm: how it identifies the main content area of a web page using\nDOM structure and text density heuristics.\nExpert Note: Learn about news clustering algorithms: how Google News groups articles into stories, the\nrole of named entity recognition (NER) in identifying story topics, and how to handle story evolution over\ntime."
+    }
+  }
+}

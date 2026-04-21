@@ -1,0 +1,175 @@
+{
+  "id": "yelp",
+  "name": "Yelp",
+  "overview": "Yelp is a local business discovery platform where users can search for restaurants, shops, and services near\nthem, read and write reviews, and view photos. The system must support geospatial search (find businesses\nwithin a radius), full-text search (search by name or category), review aggregation (compute average ratings),\nand serve personalized recommendations. The system handles 100M+ businesses and 200M+ reviews\nglobally.",
+  "topics": {
+    "functionalRequirements": {
+      "inScope": [
+        "Search businesses by location, category, and keyword",
+        "View business details, photos, and reviews",
+        "Write reviews with star ratings",
+        "Compute and display average ratings",
+        "Personalized recommendations based on user history"
+      ]
+    },
+    "nonFunctionalRequirements": {
+      "items": [
+        "Support 100M businesses, 200M reviews, 50M DAU",
+        "Search query latency <200ms p99 for geo+text+rating combined queries",
+        "Review writes reflected in search index within 60 seconds",
+        "99.9% availability; brief search degradation is tolerable over incorrect results",
+        "Geospatial queries must scale to 100M+ businesses without full-table scans",
+        "Average rating updates must be consistent — concurrent reviews must not cause incorrect counts"
+      ]
+    },
+    "coreEntities": {
+      "entities": [
+        {
+          "name": "Business",
+          "schema": "{\n  business_id: UUID,\n  name: string,\n  category: string,\n\n  address: string,\n  location: { lat, lng },\n  phone: string,\n  hours: map<day, {open, close}>,\n  avg_rating: float,\n  review_count: int,\n  photos: [string]\n}"
+        },
+        {
+          "name": "Review",
+          "schema": "{\n  review_id: UUID,\n  business_id: UUID,\n  user_id: string,\n  rating: int,  // 1-5\n  text: string,\n  photos: [string],\n  created_at: timestamp,\n  useful_count: int,\n  funny_count: int,\n  cool_count: int\n}"
+        }
+      ]
+    },
+    "apiDesign": {
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/v1/businesses/search",
+          "description": "",
+          "request": "",
+          "response": "{ businesses: [{ business_id, name, avg_rating, distance_km, category, is_open\n}], total }"
+        },
+        {
+          "method": "POST",
+          "path": "/v1/businesses/{business_id}/reviews",
+          "description": "",
+          "request": "{ rating, text, photos? }",
+          "response": "{ review_id, avg_rating_updated }"
+        }
+      ]
+    },
+    "highLevelDesign": {
+      "questions": [
+        {
+          "subTopic": "Geospatial Search",
+          "approaches": [
+            {
+              "title": "SQL with Bounding Box",
+              "description": "Filter businesses using a bounding box: WHERE lat BETWEEN lat1 AND lat2 AND lng BETWEEN lng1 AND lng2. Bounding box returns businesses in a square, not a circle. Requires post-filtering. At 100M businesses, even with indexes, this is slow.",
+              "tradeoff": "Returns square area (not circle); slow at 100M businesses.",
+              "isRecommended": false
+            },
+            {
+              "title": "PostGIS ST_DWithin",
+              "description": "Use PostGIS ST_DWithin for accurate radius queries. Spatial index (GiST) makes queries fast. Handles 100M businesses with proper indexing. But combining geospatial filter with text search and rating sort requires complex query planning.",
+              "tradeoff": "Complex query planning for combined geo+text+rating queries; PostgreSQL scaling limits.",
+              "isRecommended": false
+            },
+            {
+              "title": "Elasticsearch with Geo Distance Query",
+              "description": "Index businesses in Elasticsearch with geo_point field. Use geo_distance query for radius filter, combined with full-text search and rating sort. Elasticsearch handles all three dimensions (geo, text, rating) in a single query. Horizontal sharding scales to 100M+ businesses. Business data is synced from PostgreSQL to Elasticsearch via Kafka.",
+              "tradeoff": "Elasticsearch adds operational complexity; sync lag between PostgreSQL and Elasticsearch.",
+              "isRecommended": true
+            }
+          ]
+        },
+        {
+          "subTopic": "Review Aggregation",
+          "approaches": [
+            {
+              "title": "Compute Average on Every Query",
+              "description": "SELECT AVG(rating) FROM reviews WHERE business_id = ? At 200M reviews, this query is slow even with indexes. Computing average on every business page load is wasteful.",
+              "tradeoff": "Slow for businesses with many reviews; wasteful computation.",
+              "isRecommended": false
+            },
+            {
+              "title": "Denormalized avg_rating in Business Record",
+              "description": "Store avg_rating and review_count in the Business record. Update atomically when a new review is added. avg_rating = (avg_rating × review_count + new_rating) / (review_count + 1). This is O(1) and avoids aggregation queries. The update is done in a PostgreSQL transaction to ensure consistency.",
+              "tradeoff": "Denormalized data requires careful update logic; concurrent reviews can cause race",
+              "isRecommended": true
+            },
+            {
+              "title": "conditions (mitigated by optimistic locking).",
+              "description": "",
+              "tradeoff": "",
+              "isRecommended": false
+            }
+          ]
+        }
+      ],
+      "systemArchitecture": {
+        "components": [
+          {
+            "name": "Search API",
+            "responsibility": "Handles business search queries; queries Elasticsearch; returns ranked results"
+          },
+          {
+            "name": "Business Service",
+            "responsibility": "Manages business CRUD; syncs to Elasticsearch via Kafka"
+          },
+          {
+            "name": "Review Service",
+            "responsibility": "Handles review creation; updates avg_rating; publishes to Kafka"
+          },
+          {
+            "name": "Elasticsearch",
+            "responsibility": "Full-text + geospatial search index; 100M+ businesses"
+          },
+          {
+            "name": "PostgreSQL",
+            "responsibility": "Source of truth for businesses and reviews; ACID transactions"
+          },
+          {
+            "name": "Redis Cache",
+            "responsibility": "Caches popular business pages and search results; TTL = 5 minutes"
+          },
+          {
+            "name": "Recommendation Service",
+            "responsibility": "Personalized business recommendations based on user history"
+          },
+          {
+            "name": "Kafka",
+            "responsibility": "Syncs business/review updates to Elasticsearch and recommendation model"
+          }
+        ]
+      }
+    },
+    "deepDive": {
+      "questions": [
+        {
+          "title": "2. Review Spam Detection",
+          "content": "Yelp has a sophisticated review spam filter that removes fake reviews. The filter uses: (1) User account age\nand activity (new accounts with few friends are suspicious), (2) Review velocity (many reviews in a short time),\n(3) IP address clustering (multiple reviews from the same IP), (4) Text similarity (copy-pasted reviews), (5)\nBusiness relationship (reviewer is connected to business owner). Filtered reviews are hidden but not deleted."
+        },
+        {
+          "title": "3. Photo Storage and Processing",
+          "content": "Business and review photos are uploaded to S3 via presigned URLs. A Lambda function triggers on upload,\nresizes photos to multiple dimensions (thumbnail 100x100, medium 400x400, large 1200x1200), and stores\nthem back in S3. Photos are served via CloudFront CDN. The CDN caches popular business photos at edge\nnodes for fast delivery."
+        },
+        {
+          "title": "4. Search Ranking",
+          "content": "Business search results are ranked by a combination of: (1) Relevance score (Elasticsearch BM25 for text\nqueries), (2) Distance (closer businesses ranked higher), (3) Rating (higher-rated businesses ranked higher),\n(4) Review count (more reviews = more trustworthy), (5) Recency (recently reviewed businesses ranked\nhigher). The ranking weights are tuned using A/B testing on click-through rates."
+        },
+        {
+          "title": "5. Personalized Recommendations",
+          "content": "The Recommendation Service uses collaborative filtering to suggest businesses based on the user's review\nhistory. Users who reviewed similar businesses are considered similar. The model is trained weekly on the full\nreview history. Recommendations are pre-computed for active users and stored in Redis. For new users (cold\nstart), recommendations are based on popular businesses in their area."
+        }
+      ]
+    },
+    "design": {
+      "diagram": "Yelp — System Design\nSearch · Review · Rank · Recommend\nUser\nsearcher/reviewer\nSearch API\nReview Svc\nElasticsearch\ngeo+text index\nKafka\nsync events\nPostgreSQL\nsource of truth\nRedis Cache\nsearch results\nRec Svc\ncollab filtering\nS3\nphotos\nGET /search\nPOST /reviews\ncache check\ngeo+text query\nwrite review\nsync event\nupdate index\n train model\nupload photo",
+      "keyFlows": [
+        "① User searches → Search API → check Redis cache → Elasticsearch geo+text",
+        "② Elasticsearch: geo_distance + BM25 text + rating sort → ranked results",
+        "③ User writes review → Review Svc → PostgreSQL (update avg_rating)",
+        "④ PostgreSQL change → Kafka → Elasticsearch index update",
+        "⑤ Recommendation Svc: collaborative filtering → pre-computed recs in Redis"
+      ]
+    },
+    "whatToStudyFurther": {
+      "content": "Expert Note: Study Elasticsearch geo queries in depth: the geo_point field type, geo_distance and\ngeo_bounding_box queries, and how to combine them with full-text search using bool queries.\nExpert Note: Learn about review spam detection: how Yelp's recommendation software works, the features\nused to identify fake reviews, and the legal challenges of removing reviews.\nExpert Note: Understand denormalized aggregates: when to use denormalized counters vs. real-time\naggregation, how to handle concurrent updates safely, and how to reconcile denormalized data with the\nsource of truth.\nExpert Note: Study collaborative filtering for local recommendations: how to handle the sparsity problem\n(most users review few businesses), and how to incorporate geographic constraints.\nExpert Note: Learn about Elasticsearch cluster architecture: how shards and replicas work, how to size\nshards for 100M+ documents, and how to handle index updates without downtime."
+    }
+  }
+}
