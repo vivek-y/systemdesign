@@ -171,14 +171,6 @@ function renderBody(text: string) {
 }
 
 function TableCard({ headers, rows }: { headers: string[]; rows: string[][] }) {
-  const cell: React.CSSProperties = {
-    padding: '0.5rem 0.75rem',
-    border: '1px solid #e5e7eb',
-    fontSize: '0.8125rem',
-    lineHeight: 1.6,
-    verticalAlign: 'top',
-    whiteSpace: 'nowrap',
-  };
   return (
     <div style={{
       overflowX: 'auto',
@@ -188,20 +180,39 @@ function TableCard({ headers, rows }: { headers: string[]; rows: string[][] }) {
       paddingLeft: '1rem',
       paddingRight: '1rem',
     }}>
-      <table style={{ borderCollapse: 'collapse', minWidth: '100%' }}>
+      <table style={{ borderCollapse: 'collapse', tableLayout: 'auto', width: 'max-content', minWidth: '100%' }}>
         <thead>
-          <tr>{headers.map((h, i) => <th key={i} style={{ ...cell, backgroundColor: '#1e3a5f', color: '#fff', fontWeight: 700 }}>{h}</th>)}</tr>
+          <tr>
+            {headers.map((h, i) => (
+              <th key={i} style={{
+                padding: '0.5rem 0.75rem',
+                border: '1px solid #e5e7eb',
+                backgroundColor: '#1e3a5f',
+                color: '#fff',
+                fontWeight: 700,
+                fontSize: '0.8125rem',
+                whiteSpace: 'nowrap',
+                verticalAlign: 'top',
+              }}>{h}</th>
+            ))}
+          </tr>
         </thead>
         <tbody>
           {rows.map((row, ri) => (
             <tr key={ri} style={{ backgroundColor: ri % 2 === 0 ? '#fff' : '#f9fafb' }}>
               {row.map((c, ci) => (
                 <td key={ci} style={{
-                  ...cell,
+                  padding: '0.5rem 0.75rem',
+                  border: '1px solid #e5e7eb',
+                  fontSize: '0.8125rem',
+                  lineHeight: 1.6,
+                  verticalAlign: 'top',
                   fontWeight: ci === 0 ? 600 : 400,
                   color: ci === 0 ? '#111827' : '#374151',
-                  whiteSpace: ci === 0 ? 'nowrap' : 'normal',
-                  maxWidth: ci === 0 ? '140px' : '200px',
+                  minWidth: '120px',
+                  maxWidth: '220px',
+                  whiteSpace: 'normal',
+                  wordBreak: 'break-word',
                 }}>{c}</td>
               ))}
             </tr>
