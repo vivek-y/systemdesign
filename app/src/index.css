@@ -1,0 +1,16 @@
+/* Show bottom nav only on mobile */
+@media (min-width: 769px) {
+  nav[style*="position: fixed"] {
+    display: none !important;
+  }
+  .bottom-nav-spacer {
+    display: none !important;
+  }
+}
+
+/* Add bottom padding on mobile so content clears the nav */
+@media (max-width: 768px) {
+  body {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+}

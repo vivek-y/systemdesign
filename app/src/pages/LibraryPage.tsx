@@ -5,6 +5,9 @@ import { fetchIndex } from '../store/contentSlice';
 import { clearProgress, hydrateProgress } from '../store/progressSlice';
 import { loadAllProgressFromStorage } from '../store/localStorageMiddleware';
 import type { Difficulty } from '../types/design';
+import PdfModal from '../components/PdfModal';
+
+// ── PDF modal state (module-level so one modal serves the whole page) ──────
 
 // ── Difficulty badge ───────────────────────────────────────────────────────
 
@@ -22,21 +25,22 @@ function DifficultyBadge({ level }: { level: Difficulty }) {
   );
 }
 
-// ── PDF icon link ──────────────────────────────────────────────────────────
+// ── PDF icon button ────────────────────────────────────────────────────────
 
-function WriteupLink({ pdfFile, href }: { pdfFile?: string; href?: string }) {
-  const url = href ?? (pdfFile ? `${import.meta.env.BASE_URL}docs/system-design/${pdfFile}` : undefined);
-  if (!url) return <span style={{ color: '#d1d5db' }}>—</span>;
+function WriteupBtn({ onOpen }: { onOpen: () => void }) {
   return (
-    <a href={url} target="_blank" rel="noopener noreferrer" title="Open PDF"
-      style={{ color: '#0d9488', display: 'inline-flex', alignItems: 'center' }}>
+    <button
+      onClick={onOpen}
+      title="Open PDF"
+      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#0d9488', display: 'inline-flex', alignItems: 'center', padding: 0 }}
+    >
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
         <polyline points="14 2 14 8 20 8" />
         <line x1="9" y1="13" x2="15" y2="13" />
         <line x1="9" y1="17" x2="13" y2="17" />
       </svg>
-    </a>
+    </button>
   );
 }
 
@@ -119,7 +123,7 @@ interface DesignRowProps {
   onStartOver: () => void;
 }
 
-function DesignRow({ name, difficulty, pdfFile, hasProgress, isCompleted, onStart, onStartOver }: DesignRowProps) {
+function DesignRow({ name, difficulty, pdfFile, hasProgress, isCompleted, onStart, onStartOver, onOpenPdf }: DesignRowProps & { onOpenPdf?: () => void }) {
   const [hovered, setHovered] = useState(false);
   const btn: React.CSSProperties = { border: 'none', borderRadius: '6px', padding: '0.375rem 0.875rem', fontSize: '0.8125rem', cursor: 'pointer', fontWeight: 600 };
 
@@ -138,7 +142,7 @@ function DesignRow({ name, difficulty, pdfFile, hasProgress, isCompleted, onStar
         <DifficultyBadge level={difficulty} />
       </td>
       <td style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #f3f4f6' }}>
-        <WriteupLink pdfFile={pdfFile} />
+        {onOpenPdf ? <WriteupBtn onOpen={onOpenPdf} /> : <span style={{ color: '#d1d5db' }}>—</span>}
       </td>
       <td style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #f3f4f6' }}>
         <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
@@ -165,10 +169,9 @@ interface BehaviouralRowProps {
   pdfFile: string;
 }
 
-function BehaviouralRow({ name, description, sectionId, pdfFile }: BehaviouralRowProps) {
+function BehaviouralRow({ name, description, sectionId, pdfFile, onOpenPdf }: BehaviouralRowProps & { onOpenPdf: () => void }) {
   const [hovered, setHovered] = useState(false);
   const navigate = useNavigate();
-  const pdfHref = `${import.meta.env.BASE_URL}docs/behavioural/${pdfFile}`;
 
   return (
     <tr onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
@@ -178,7 +181,7 @@ function BehaviouralRow({ name, description, sectionId, pdfFile }: BehaviouralRo
         <div style={{ fontSize: '0.8125rem', color: '#6b7280', marginTop: '0.125rem' }}>{description}</div>
       </td>
       <td style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #f3f4f6', width: '100px' }}>
-        <WriteupLink href={pdfHref} />
+        <WriteupBtn onOpen={onOpenPdf} />
       </td>
       <td style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #f3f4f6', width: '180px' }}>
         <button onClick={() => navigate(`/behavioural/${sectionId}`)}
@@ -206,9 +209,8 @@ const REF_DESC: Record<string, string> = {
 
 interface RefSummary { id: string; name: string; }
 
-function RefRow({ item, isLast, onNavigate }: { item: RefSummary; isLast: boolean; onNavigate: () => void }) {
+function RefRow({ item, isLast, onNavigate, onOpenPdf }: { item: RefSummary; isLast: boolean; onNavigate: () => void; onOpenPdf: () => void }) {
   const [hovered, setHovered] = useState(false);
-  const pdfHref = REF_PDF[item.id] ? `${import.meta.env.BASE_URL}docs/reference/${REF_PDF[item.id]}` : undefined;
   const border = isLast ? 'none' : '1px solid #f3f4f6';
 
   return (
@@ -219,7 +221,7 @@ function RefRow({ item, isLast, onNavigate }: { item: RefSummary; isLast: boolea
         <div style={{ fontSize: '0.8125rem', color: '#6b7280', marginTop: '0.125rem' }}>{REF_DESC[item.id] ?? ''}</div>
       </td>
       <td style={{ padding: '0.75rem 1rem', borderBottom: border, width: '100px' }}>
-        <WriteupLink href={pdfHref} />
+        <WriteupBtn onOpen={onOpenPdf} />
       </td>
       <td style={{ padding: '0.75rem 1rem', borderBottom: border, width: '180px' }}>
         <button onClick={onNavigate}
@@ -241,6 +243,10 @@ export default function LibraryPage() {
   const indexLoading = useAppSelector((state) => state.content.loading['__index__'] ?? false);
   const records = useAppSelector((state) => state.progress.records);
   const [refs, setRefs] = useState<RefSummary[]>([]);
+  const [modal, setModal] = useState<{ url: string; title: string } | null>(null);
+
+  const openPdf = (url: string, title: string) => setModal({ url, title });
+  const closePdf = () => setModal(null);
 
   useEffect(() => {
     dispatch(fetchIndex());
@@ -267,6 +273,7 @@ export default function LibraryPage() {
   const makeDesignRows = (designs: typeof index) =>
     designs.map((design) => {
       const progress = records[design.id] ?? null;
+      const pdfUrl = design.pdfFile ? `${import.meta.env.BASE_URL}docs/system-design/${design.pdfFile}` : undefined;
       return (
         <DesignRow
           key={design.id}
@@ -277,6 +284,7 @@ export default function LibraryPage() {
           isCompleted={progress?.completed ?? false}
           onStart={() => navigate(`/attempt/${design.id}`)}
           onStartOver={() => { dispatch(clearProgress(design.id)); navigate(`/attempt/${design.id}`); }}
+          onOpenPdf={pdfUrl ? () => openPdf(pdfUrl, design.name) : undefined}
         />
       );
     });
@@ -292,6 +300,9 @@ export default function LibraryPage() {
         Interview Prep
       </h1>
 
+      {/* ── PDF Modal ───────────────────────────────────────────────────── */}
+      {modal && <PdfModal url={modal.url} title={modal.title} onClose={closePdf} />}
+
       {/* ── Reference Docs ──────────────────────────────────────────────── */}
       {refs.length > 0 && (
         <Accordion title="Reference Docs" count={refs.length}>
@@ -300,9 +311,18 @@ export default function LibraryPage() {
               <tr><Th>Topic</Th><Th width="100px">Write-Up</Th><Th width="180px">Action</Th></tr>
             </thead>
             <tbody>
-              {refs.map((ref, i) => (
-                <RefRow key={ref.id} item={ref} isLast={i === refs.length - 1} onNavigate={() => navigate(`/reference-practice/${ref.id}`)} />
-              ))}
+              {refs.map((ref, i) => {
+                const pdfUrl = REF_PDF[ref.id] ? `${import.meta.env.BASE_URL}docs/reference/${REF_PDF[ref.id]}` : undefined;
+                return (
+                  <RefRow
+                    key={ref.id}
+                    item={ref}
+                    isLast={i === refs.length - 1}
+                    onNavigate={() => navigate(`/reference-practice/${ref.id}`)}
+                    onOpenPdf={() => pdfUrl && openPdf(pdfUrl, ref.name)}
+                  />
+                );
+              })}
             </tbody>
           </table>
         </Accordion>
@@ -315,7 +335,13 @@ export default function LibraryPage() {
             <tr><Th>Topic</Th><Th width="100px">Write-Up</Th><Th width="180px">Action</Th></tr>
           </thead>
           <tbody>
-            {behaviouralItems.map((item) => <BehaviouralRow key={item.sectionId} {...item} />)}
+            {behaviouralItems.map((item) => (
+              <BehaviouralRow
+                key={item.sectionId}
+                {...item}
+                onOpenPdf={() => openPdf(`${import.meta.env.BASE_URL}docs/behavioural/${item.pdfFile}`, item.name)}
+              />
+            ))}
           </tbody>
         </table>
       </Accordion>
