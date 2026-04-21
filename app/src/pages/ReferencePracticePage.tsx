@@ -177,19 +177,16 @@ function TableCard({ headers, rows }: { headers: string[]; rows: string[][] }) {
     fontSize: '0.8125rem',
     lineHeight: 1.6,
     verticalAlign: 'top',
-    whiteSpace: 'nowrap',   // prevent wrapping — let the container scroll instead
+    whiteSpace: 'nowrap',
   };
   return (
     <div style={{
       overflowX: 'auto',
-      overflowY: 'visible',
       marginTop: '1rem',
-      // Bleed out of the card padding on mobile so the full width is usable
       marginLeft: '-1rem',
       marginRight: '-1rem',
       paddingLeft: '1rem',
       paddingRight: '1rem',
-      WebkitOverflowScrolling: 'touch', // smooth momentum scroll on iOS
     }}>
       <table style={{ borderCollapse: 'collapse', minWidth: '100%' }}>
         <thead>
@@ -203,9 +200,8 @@ function TableCard({ headers, rows }: { headers: string[]; rows: string[][] }) {
                   ...cell,
                   fontWeight: ci === 0 ? 600 : 400,
                   color: ci === 0 ? '#111827' : '#374151',
-                  // First column stays readable; others can be compact
                   whiteSpace: ci === 0 ? 'nowrap' : 'normal',
-                  maxWidth: ci === 0 ? '160px' : '220px',
+                  maxWidth: ci === 0 ? '140px' : '200px',
                 }}>{c}</td>
               ))}
             </tr>
@@ -289,7 +285,7 @@ export default function ReferencePracticePage() {
         <div style={{ height: '100%', width: `${((index + 1) / total) * 100}%`, backgroundColor: '#0d9488', borderRadius: '9999px', transition: 'width 0.3s ease' }} />
       </div>
 
-      <div style={{ backgroundColor: '#ffffff', border: '1px solid #e5e7eb', borderRadius: '12px', padding: '2rem', boxShadow: '0 1px 4px rgba(0,0,0,0.07)', minHeight: '200px' }}>
+      <div style={{ backgroundColor: '#ffffff', border: '1px solid #e5e7eb', borderRadius: '12px', padding: '1.25rem', boxShadow: '0 1px 4px rgba(0,0,0,0.07)', minHeight: '200px', overflow: 'hidden' }}>
         <SectionCard section={current} isQuestion={doc.id === 'follow-up-questions'} />
       </div>
 
