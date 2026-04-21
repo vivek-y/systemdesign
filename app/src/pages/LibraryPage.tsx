@@ -31,7 +31,7 @@ export default function LibraryPage() {
     dispatch(fetchIndex());
     dispatch(hydrateProgress(loadAllProgressFromStorage()));
     // Load reference index
-    fetch('/data/reference/index.json')
+    fetch(`${import.meta.env.BASE_URL}data/reference/index.json`)
       .then((r) => r.ok ? r.json() : { references: [] })
       .then((data) => setRefs(data.references ?? []))
       .catch(() => setRefs([]));

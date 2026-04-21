@@ -368,7 +368,7 @@ export default function ReferencePage() {
   useEffect(() => {
     if (!refId) return;
     setLoading(true);
-    fetch(`/data/reference/${refId}.json`)
+    fetch(`${import.meta.env.BASE_URL}data/reference/${refId}.json`)
       .then((r) => { if (!r.ok) throw new Error(`Failed to load: ${r.status}`); return r.json(); })
       .then((data: ReferenceDoc) => { setDoc(data); setLoading(false); })
       .catch((e) => { setError(e.message); setLoading(false); });

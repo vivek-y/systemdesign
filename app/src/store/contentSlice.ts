@@ -18,7 +18,8 @@ const initialState: ContentState = {
 export const fetchIndex = createAsyncThunk(
   'content/fetchIndex',
   async () => {
-    const response = await fetch('/data/index.json');
+    const base = import.meta.env.BASE_URL;
+    const response = await fetch(`${base}data/index.json`);
     if (!response.ok) {
       throw new Error(`Failed to fetch index: ${response.status}`);
     }
@@ -36,7 +37,8 @@ export const fetchIndex = createAsyncThunk(
 export const fetchDesignContent = createAsyncThunk(
   'content/fetchDesignContent',
   async (designId: string) => {
-    const response = await fetch(`/data/${designId}.json`);
+    const base = import.meta.env.BASE_URL;
+    const response = await fetch(`${base}data/${designId}.json`);
     if (!response.ok) {
       throw new Error(`Failed to fetch design "${designId}": ${response.status}`);
     }
