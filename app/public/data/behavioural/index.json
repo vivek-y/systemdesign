@@ -1,0 +1,14 @@
+{
+  "sections": [
+    {
+      "id": "stories",
+      "name": "Stories",
+      "description": "Personal leadership and engineering stories"
+    },
+    {
+      "id": "scenarios",
+      "name": "Scenarios",
+      "description": "Behavioural interview questions with prepared answers"
+    }
+  ]
+}

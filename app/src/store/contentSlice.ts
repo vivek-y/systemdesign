@@ -37,6 +37,10 @@ export const fetchIndex = createAsyncThunk(
 export const fetchDesignContent = createAsyncThunk(
   'content/fetchDesignContent',
   async (designId: string) => {
+    // Validate: only allow alphanumeric, hyphens — no path traversal
+    if (!/^[a-z0-9-]+$/.test(designId)) {
+      throw new Error(`Invalid design ID: "${designId}"`);
+    }
     const base = import.meta.env.BASE_URL;
     const response = await fetch(`${base}data/${designId}.json`);
     if (!response.ok) {

@@ -1,132 +1,36 @@
 {
   "designs": [
-    {
-      "id": "ads-click-aggregator",
-      "name": "Ads Click Aggregator"
-    },
-    {
-      "id": "bitly",
-      "name": "Bitly"
-    },
-    {
-      "id": "delivery-system",
-      "name": "Delivery System"
-    },
-    {
-      "id": "distributed-cache",
-      "name": "Distributed Cache"
-    },
-    {
-      "id": "dropbox",
-      "name": "Dropbox"
-    },
-    {
-      "id": "fb-live-comments",
-      "name": "FB Live Comments"
-    },
-    {
-      "id": "fb-news-feed",
-      "name": "FB News Feed"
-    },
-    {
-      "id": "fb-post-search",
-      "name": "FB Post Search"
-    },
-    {
-      "id": "google-docs",
-      "name": "Google Docs"
-    },
-    {
-      "id": "instagram",
-      "name": "Instagram"
-    },
-    {
-      "id": "job-scheduler",
-      "name": "Job Scheduler"
-    },
-    {
-      "id": "leet-code",
-      "name": "Leet Code"
-    },
-    {
-      "id": "lyft-driver-location",
-      "name": "Lyft Driver Location"
-    },
-    {
-      "id": "lyft-eta",
-      "name": "Lyft ETA"
-    },
-    {
-      "id": "lyft-ride-matching",
-      "name": "Lyft Ride Matching"
-    },
-    {
-      "id": "lyft-surge-pricing",
-      "name": "Lyft Surge Pricing"
-    },
-    {
-      "id": "metrics-monitoring",
-      "name": "Metrics Monitoring"
-    },
-    {
-      "id": "netflix",
-      "name": "Netflix"
-    },
-    {
-      "id": "news-aggregator",
-      "name": "News Aggregator"
-    },
-    {
-      "id": "online-auction",
-      "name": "Online Auction"
-    },
-    {
-      "id": "payment-system",
-      "name": "Payment System"
-    },
-    {
-      "id": "price-tracking",
-      "name": "Price Tracking"
-    },
-    {
-      "id": "rate-limiter",
-      "name": "Rate Limiter"
-    },
-    {
-      "id": "robinhood",
-      "name": "Robinhood"
-    },
-    {
-      "id": "strava",
-      "name": "Strava"
-    },
-    {
-      "id": "ticketmaster",
-      "name": "Ticketmaster"
-    },
-    {
-      "id": "tinder",
-      "name": "Tinder"
-    },
-    {
-      "id": "uber",
-      "name": "Uber"
-    },
-    {
-      "id": "web-crawler",
-      "name": "Web Crawler"
-    },
-    {
-      "id": "whats-app",
-      "name": "WhatsApp"
-    },
-    {
-      "id": "yelp",
-      "name": "Yelp"
-    },
-    {
-      "id": "you-tube",
-      "name": "YouTube"
-    }
+    { "id": "bitly",                 "name": "Bitly",                  "difficulty": "Easy",   "pdfFile": "Bitly.pdf" },
+    { "id": "delivery-system",       "name": "Delivery System",         "difficulty": "Easy",   "pdfFile": "DeliverySystem.pdf" },
+    { "id": "dropbox",               "name": "Dropbox",                 "difficulty": "Easy",   "pdfFile": "Dropbox.pdf" },
+    { "id": "news-aggregator",       "name": "News Aggregator",         "difficulty": "Easy",   "pdfFile": "NewsAggregator.pdf" },
+    { "id": "rate-limiter",          "name": "Rate Limiter",            "difficulty": "Easy",   "pdfFile": "RateLimiter.pdf" },
+    { "id": "web-crawler",           "name": "Web Crawler",             "difficulty": "Easy",   "pdfFile": "WebCrawler.pdf" },
+    { "id": "distributed-cache",     "name": "Distributed Cache",       "difficulty": "Medium", "pdfFile": "DistributedCache.pdf" },
+    { "id": "fb-live-comments",      "name": "FB Live Comments",        "difficulty": "Medium", "pdfFile": "FBLiveComments.pdf" },
+    { "id": "fb-news-feed",          "name": "FB News Feed",            "difficulty": "Medium", "pdfFile": "FBNewsFeed.pdf" },
+    { "id": "fb-post-search",        "name": "FB Post Search",          "difficulty": "Medium", "pdfFile": "FBPostSearch.pdf" },
+    { "id": "instagram",             "name": "Instagram",               "difficulty": "Medium", "pdfFile": "Instagram.pdf" },
+    { "id": "job-scheduler",         "name": "Job Scheduler",           "difficulty": "Medium", "pdfFile": "JobScheduler.pdf" },
+    { "id": "leet-code",             "name": "LeetCode",                "difficulty": "Medium", "pdfFile": "LeetCode.pdf" },
+    { "id": "lyft-driver-location",  "name": "Lyft Driver Location",    "difficulty": "Medium", "pdfFile": "Lyft_DriverLocation.pdf" },
+    { "id": "lyft-eta",              "name": "Lyft ETA",                "difficulty": "Medium", "pdfFile": "Lyft_ETA.pdf" },
+    { "id": "lyft-ride-matching",    "name": "Lyft Ride Matching",      "difficulty": "Medium", "pdfFile": "Lyft_RideMatching.pdf" },
+    { "id": "lyft-surge-pricing",    "name": "Lyft Surge Pricing",      "difficulty": "Medium", "pdfFile": "Lyft_SurgePricing.pdf" },
+    { "id": "metrics-monitoring",    "name": "Metrics Monitoring",      "difficulty": "Medium", "pdfFile": "MetricsMonitoring.pdf" },
+    { "id": "online-auction",        "name": "Online Auction",          "difficulty": "Medium", "pdfFile": "OnlineAuction.pdf" },
+    { "id": "payment-system",        "name": "Payment System",          "difficulty": "Medium", "pdfFile": "PaymentSystem.pdf" },
+    { "id": "price-tracking",        "name": "Price Tracking",          "difficulty": "Medium", "pdfFile": "PriceTracking.pdf" },
+    { "id": "strava",                "name": "Strava",                  "difficulty": "Medium", "pdfFile": "Strava.pdf" },
+    { "id": "ticketmaster",          "name": "Ticketmaster",            "difficulty": "Medium", "pdfFile": "Ticketmaster.pdf" },
+    { "id": "tinder",                "name": "Tinder",                  "difficulty": "Medium", "pdfFile": "Tinder.pdf" },
+    { "id": "whats-app",             "name": "WhatsApp",                "difficulty": "Medium", "pdfFile": "WhatsApp.pdf" },
+    { "id": "yelp",                  "name": "Yelp",                    "difficulty": "Medium", "pdfFile": "Yelp.pdf" },
+    { "id": "ads-click-aggregator",  "name": "Ads Click Aggregator",    "difficulty": "Hard",   "pdfFile": "AdsClickAggregator.pdf" },
+    { "id": "google-docs",           "name": "Google Docs",             "difficulty": "Hard",   "pdfFile": "GoogleDocs.pdf" },
+    { "id": "netflix",               "name": "Netflix",                 "difficulty": "Hard",   "pdfFile": "Netflix.pdf" },
+    { "id": "robinhood",             "name": "Robinhood",               "difficulty": "Hard",   "pdfFile": "Robinhood.pdf" },
+    { "id": "uber",                  "name": "Uber",                    "difficulty": "Hard",   "pdfFile": "Uber.pdf" },
+    { "id": "you-tube",              "name": "YouTube",                 "difficulty": "Hard",   "pdfFile": "YouTube.pdf" }
   ]
 }

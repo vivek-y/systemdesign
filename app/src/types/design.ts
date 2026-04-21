@@ -93,9 +93,13 @@ export interface DesignContent {
 }
 
 // Index file
+export type Difficulty = 'Easy' | 'Medium' | 'Hard';
+
 export interface DesignSummary {
   id: string;
   name: string;
+  difficulty: Difficulty;
+  pdfFile?: string; // optional override; defaults to name-derived filename
 }
 
 export interface DesignIndex {

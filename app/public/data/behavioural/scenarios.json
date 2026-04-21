@@ -1,0 +1,424 @@
+{
+  "id": "scenarios",
+  "name": "Scenarios",
+  "sections": [
+    {
+      "id": "project-execution",
+      "name": "Project Execution & Delivery",
+      "items": ["deadline-risk", "rescope-mid-flight", "competing-priorities", "complex-project", "stakeholder-off-track", "hardest-decision", "product-pushback-feature-swap", "track-project-health", "incomplete-team", "technical-debt-velocity", "planning-philosophy"]
+    },
+    {
+      "id": "failures-learning",
+      "name": "Failures & Learning",
+      "items": ["failure-learned", "do-differently", "team-learned", "production-failure", "escalated-too-late"]
+    },
+    {
+      "id": "cross-team-stakeholder",
+      "name": "Cross-Team & Stakeholder Dynamics",
+      "items": ["blocked-by-team", "align-conflicting-teams", "influence-no-authority", "other-team-negative-impact", "upstream-team-mistake", "represent-team-interests", "engineering-product-alignment", "product-no-directional-thinking", "org-level-conflict", "distributed-team-communication", "build-stakeholder-relationships"]
+    },
+    {
+      "id": "decision-making",
+      "name": "Decision Making",
+      "items": ["incomplete-data", "unpopular-decision", "escalate-vs-solve"]
+    },
+    {
+      "id": "disagreements-pushback",
+      "name": "Disagreements & Pushback",
+      "items": ["disagreement-pm", "peer-pushback"]
+    },
+    {
+      "id": "people-management",
+      "name": "People Management",
+      "items": ["skill-gaps", "plateauing-engineers", "engineer-wrong-direction", "low-performer", "no-response-to-plan", "manage-team-during-pip", "retain-top-engineers", "develop-ic-levels", "ic-wants-growth-no-behaviors", "psychological-safety", "psychological-safety-new-team", "reshape-team", "engineer-doesnt-fit"]
+    },
+    {
+      "id": "hiring",
+      "name": "Hiring",
+      "items": ["hiring-process", "team-loves-candidate", "bad-hire", "keep-investing-vs-mismatch"]
+    },
+    {
+      "id": "motivation-culture",
+      "name": "Motivation & Culture",
+      "items": ["team-motivation-uncertainty", "you-dont-know-whats-happening"]
+    },
+    {
+      "id": "feedback",
+      "name": "Feedback",
+      "items": ["feedback-philosophy", "feedback-resistant"]
+    }
+  ],
+  "items": [
+    {
+      "id": "deadline-risk",
+      "question": "Tell me about a project at risk of missing its deadline. What did you do?",
+      "story": "E2E Redesign",
+      "answer": "At Ancestry, I led the rebuild of our onboarding flow with a hard deadline tied to RootsTech — the single biggest public event in the genealogy world. When the final designs landed, we were looking at five months of work in a three-month window.\n\nI ran a t-shirt sizing session with the team, added buffer tickets for unknowns, and came back with a concrete capacity model. I immediately facilitated a prioritization exercise with the PMs — sorting every feature into must-have, nice-to-have, and can-come-later. We aligned on a phased rollout. That conversation was only possible because I had numbers to anchor it, not opinions.\n\nMid-development, we hit a regression — hint generation rates weren't matching the legacy flow. I called an SOS with stakeholders, explained exactly what was broken and why it mattered, then paired directly with a senior engineer to dig into root cause. We found it — a change in how user data was being ingested. I came back to product with a specific trade-off: move one MVP feature of equivalent effort out to the follow-up release, pull the hint fix in. A decision, not a problem. They agreed, I re-sequenced the team, and we stayed on track.\n\nThe MVP launched on time at RootsTech. Hint generation rate increased 2% over legacy, build-through rate up 5%, onboarding time dropped from 60 to 40 minutes.",
+      "insight": "The estimation session didn't just give me numbers — it gave me credibility. Because I'd already shown product I worked from data, not gut feel, they trusted my trade-off proposal immediately when the crisis hit. The real lesson is about building decision-making credibility in the first month, so you have it when you actually need it in month two."
+    },
+    {
+      "id": "rescope-mid-flight",
+      "question": "Describe a time you had to re-scope a project mid-flight.",
+      "story": "E2E Redesign — hint regression",
+      "answer": "About six weeks into our onboarding rebuild at Ancestry, we hit a regression we hadn't anticipated. Hint generation rates weren't matching the legacy flow — and hints are the core hook of the Ancestry experience. This wasn't a nice-to-have metric. It was one of our primary success measures for the launch.\n\nI did three things in sequence. First, before any stakeholder conversation, I paired directly with a senior engineer to fully understand the root cause. I didn't want to walk into a room with a problem — I wanted to walk in with a diagnosis. We found it: a fundamental change in how user data was being ingested. Second, I quantified the fix in terms product could reason about — not in engineering hours, but in feature equivalence. The fix was roughly equivalent in effort to one MVP feature we had in scope. Third, I called an SOS with stakeholders and led with the business impact first. Here's what's broken, here's why it matters to our launch metrics, here's what I propose — move this one feature to the follow-up release, pull the hint fix into MVP scope. A decision, not a problem.\n\nProduct agreed in that same meeting. I re-sequenced the team's work that afternoon. The MVP launched on time. Hint generation rate came in 2% above the legacy flow.",
+      "insight": "The technical decision is usually the easy part. The hard part is the communication architecture around it. Three things made this work: I came with a diagnosis not just a problem, I framed the trade-off in product's language not engineering's language, and I moved fast. Early, specific, and solution-forward is the only way to re-scope without breaking the relationship."
+    },
+    {
+      "id": "competing-priorities",
+      "question": "How do you handle competing priorities when multiple projects need attention?",
+      "story": "Paid Hints Initiative",
+      "answer": "My starting point is that competing priorities are almost always a sequencing problem, not a capacity problem. Context switching doesn't distribute your attention, it degrades it. My job is to sequence deliberately so each workstream gets focused attention at the right moment.\n\nOn the paid hints initiative at Ancestry, I was simultaneously managing three workstreams. The first was a two-week validation experiment — lightweight, fast-moving, needed me for scope decisions daily. The second was the full infrastructure design running in parallel — slower, more architectural, needed me at specific review checkpoints but not constantly. The third was cross-team coordination across five engineering teams — relationship-driven, needed consistent cadence but not daily attention.\n\nI kept that from becoming chaos by being explicit about what each workstream needed from me specifically versus what could run without me. I also protected my team from the competing priorities even when I was carrying them myself — the engineers on the infrastructure build didn't need to know the experiment might invalidate their work. I held that uncertainty at my level until the experiment came back positive.\n\nAll three tracks moved simultaneously without any of them feeling under-managed. The experiment validated in two weeks. The infrastructure was ready to accelerate the moment results came in. Full implementation wrapped in under a month.",
+      "insight": "The question isn't how to give everything equal attention — it's how to give each thing the right kind of attention at the right time. Equal attention is a fantasy. Sequenced, deliberate attention is a system."
+    },
+    {
+      "id": "disagreement-pm",
+      "question": "How do you handle disagreements with a PM or another EM?",
+      "story": "Onboarding rebuild timeline + hint regression",
+      "answer": "My starting point in any disagreement with a PM is to ask myself one question before the conversation: am I pushing back because I have better information, or because I'm uncomfortable with the decision? Those are very different situations.\n\nOn the onboarding rebuild, the PM came in with a three-month deadline for what my team's bottom-up estimation showed was a five-month build. I didn't frame it as Engineering vs. Product. I ran a full t-shirt sizing session, broke every requirement into tickets, explicitly surfaced the hidden work. I came to the PM with a capacity model, not a complaint. The conversation wasn't 'three months is impossible' — it was 'here's what three months actually buys us, here's what five months buys us, and here's a third option that gets us to market in three months with a phased delivery model.' The PM agreed immediately because I'd reframed the conversation from a constraint to a strategy.\n\nMid-project the disagreement went the other way. When the hint regression surfaced, I came to the PM with a feature swap proposal. The PM's first instinct was to keep everything in scope. I held my ground — not because I was being territorial, but because I had specific data showing that shipping with the regression would hurt our primary success metric. I explained the consequence clearly, gave product the trade-off in their language, and let the data make the argument.",
+      "insight": "The relationship survives conflict just fine — what it doesn't survive is the feeling of being surprised or manipulated. My default is always to bring more data than the conversation needs and fewer opinions than I actually have."
+    },
+    {
+      "id": "engineering-product-alignment",
+      "question": "How do you create alignment between Engineering and Product when roadmaps conflict?",
+      "story": "Post-layoff proactive prototype",
+      "answer": "My view is that roadmap conflicts between Engineering and Product are almost always a symptom of the same root cause — Engineering and Product are operating on different time horizons without a shared visibility mechanism. When those two conversations happen sequentially instead of simultaneously, conflict is inevitable.\n\nWhen our entire product and UX org was laid off and a new product team came in with a different vision, I deliberately broke the traditional model. I set up individual one-on-ones with the incoming PMs as soon as they were assigned — not to get requirements, but to understand their directional thinking before anything was finalized. Those conversations gave me enough signal to identify that tree-building functionality was central to their vision. I made the call to start building toward that target without final specs, knowing some work might be throwaway. I was transparent with my team and with product — our prototype work would not constrain their independent vision-building process.\n\nWhen final requirements landed a month later, my team already had a working solution close to target. Build time dropped from an estimated four months to three. Conversion improved 10%, NPS improved 15%.\n\nAfterward I introduced early vision meetings with product as an ongoing practice — product shares directional thinking before requirements are complete, engineering flags feasibility concerns before commitments are made.",
+      "insight": "Engineering and Product alignment isn't something you achieve in a negotiation. It's something you build through a shared visibility rhythm. Waiting for complete requirements is often the wrong default. Enough directional signal is enough to start building meaningfully."
+    },
+    {
+      "id": "incomplete-data",
+      "question": "Tell me about a time you had to decide with incomplete data.",
+      "story": "Proactive onboarding prototype",
+      "answer": "When our product org was laid off and a new team was assigned, I had a choice: wait for complete requirements or start building on directional signal. I chose to act on incomplete data — deliberately.\n\nI met with the incoming PMs before they'd finalized anything. From those conversations I identified that tree-building functionality was central to their vision. I made the call to start building toward it without specs, knowing some work might be throwaway. Before moving forward I brought my manager in, explained the approach and the tradeoff, and got his support. I was equally transparent with my team — told them directly that some of this work might get thrown away.\n\nThe key was being explicit about what I knew and what I didn't. I wasn't pretending I had certainty. I was making a calculated bet: the cost of starting early on a directional signal was lower than the cost of waiting a month for complete requirements. When final specs landed, we already had a working solution close to target. Build time dropped 25%.",
+      "insight": "Deciding with incomplete data isn't reckless if you're honest about the uncertainty, transparent with your team about the risk, and structured about what you're betting on. The mistake isn't acting on incomplete data — it's pretending you have more certainty than you do."
+    },
+    {
+      "id": "unpopular-decision",
+      "question": "Describe a time you had to make an unpopular decision. How did you bring people along?",
+      "story": "Paid Hints — cross-team alignment",
+      "answer": "At Ancestry I was leading an initiative that required integrating five separate engineering teams, each owning a different piece of the flow. None of them had us in their roadmap. Leadership wanted results in three months. On paper, we were blocked before we started.\n\nMy first instinct was not to escalate. Escalation would have created resentment — nobody wants their EM told by leadership to drop everything for another team's project. So I went to each EM individually, one on one, before any group meeting happened. Not to ask for help — to understand their world. What were they working on? What was their team's capacity? What would make a request from me easy to say yes to?\n\nFrom there I did three things to systematically reduce the block. First, I mapped every dependency across all five teams into flow diagrams and shared them openly — making the interdependencies visible created shared ownership. Second, I built a shared integration component on my team's side that cut the implementation burden for other teams by roughly 50%. Third, I ran a two-week lightweight experiment first — before asking anyone to commit to the full build. When that came back positive, I walked into every conversation with data instead of a request.\n\nThe full implementation wrapped in under a month after validation. None of those EMs felt steamrolled. Three of them became active collaborators on the follow-up work.",
+      "insight": "Being blocked by another team is almost never really about the other team. It's about whether you've made it easy enough for them to help you. The teams weren't blocking us — they were just full. My job was to reduce the cost of their yes until it became the obvious choice."
+    },
+    {
+      "id": "complex-project",
+      "question": "Walk me through your most complex project from inception to launch.",
+      "story": "Paid Hints Experiment",
+      "answer": "As a software engineering manager at Ancestry, I was asked to help drive Build-Through Rate. The product team believed putting new person hints behind a paywall could move that number, but there was no infrastructure to support it and five separate engineering teams each owned a different piece of the flow.\n\nBefore touching any technical planning, I partnered with product to deeply understand what outcome we were actually trying to achieve. Then I independently audited the existing infrastructure, met with architects to map what would need to be built, and reached out to all five engineering managers to understand their ownership. I built flow diagrams to clarify dependencies.\n\nWhen the estimated timeline came back at five months, I pushed back. That was too long to wait before knowing if users would even pay for hints. So I proposed a lightweight experiment — scoped to a single UI stack, zero free hints, paywall on first attempt, no ledger system required. I launched it using Adobe Target in two weeks. While it ran, I kept working in parallel with architects on the larger infrastructure design.\n\nWhen the experiment came back positive, I used that data to shift prioritization across all five teams. I built a shared integration component that cut implementation effort for other teams by about 50%. The full implementation wrapped in under a month. The result was a 20% increase in Build-Through Rate and the first ledger system ever built at Ancestry.",
+      "insight": "When a timeline feels too long to wait before testing a hypothesis, don't just accept it. Look for the smallest possible experiment that can validate your assumptions first. Running that lightweight test in parallel with infrastructure planning lets you de-risk the project and build momentum at the same time."
+    },
+    {
+      "id": "stakeholder-off-track",
+      "question": "How did you manage stakeholder communication when things went off track?",
+      "story": "E2E Redesign — hint regression",
+      "answer": "When the hint regression surfaced six weeks into our onboarding rebuild, my first move was not to call a stakeholder meeting. It was to understand the problem fully before I picked up the phone. I paired directly with a senior engineer to quantify exactly what the regression meant in terms of our launch metrics — not in technical terms but in business terms.\n\nThen I called an SOS with stakeholders and led with the business impact first, not the technical details. Here's what's broken, here's why it matters to our launch metrics, here's what I propose. I came with a diagnosis, not just a problem. I framed the trade-off in product's language — feature equivalence, not engineering hours. And I moved fast — the longer a known problem sits unaddressed the more it erodes trust.\n\nProduct agreed in that same meeting. I re-sequenced the team's work that afternoon.",
+      "insight": "Early, specific, and solution-forward is the only way to manage stakeholders when things go off track. The relationship doesn't break from bad news — it breaks from surprises and from problems without proposed solutions."
+    },
+    {
+      "id": "production-failure",
+      "question": "Tell me about a time there was a production failure.",
+      "story": "The 5% Edge Case Cascading Failure",
+      "answer": "We deployed a new feature to production. While our automated tests and manual smoke tests passed, we began experiencing a cascading failure about an hour after deployment. A specific condition in a legacy flow — used by only 5% of our users — was causing a fatal exception that crashed the entire service instance. Because these instances were crashing and restarting constantly, it began impacting the 95% of healthy traffic, leading to a site-wide degradation.\n\nI led the response through three distinct phases. First, the Rollback First policy: within 5 minutes of identifying the instability, I made the call to trigger a full rollback. I have a strict policy — in production, we don't fix forward while the site is down. We restore service first, then investigate. Second, the Micro-RCA: after the rollback, we dug into the logs and found the architectural flaw — the 5% flow was hosted within the same process as the primary flow. A memory-leak exception in the legacy code was killing the container, which took the healthy traffic down with it. Third, Systemic Hardening: I lowered our error-rate thresholds to catch low-volume/high-severity anomalies, implemented mandatory canary windows for all deployments, and initiated a project to decouple legacy flows into their own microservice.\n\nWe restored the site to 100% health within minutes of the rollback. The new canary and isolation strategy has since caught two other edge-case bugs before they ever hit a single real user.",
+      "insight": "The real failure wasn't the incident. It was the three months before the incident where I had enough information to prevent it and chose not to prioritize it. I now maintain an explicit risk register for every project — deferred risk doesn't disappear, it just waits for the worst possible moment to surface."
+    },
+    {
+      "id": "blocked-by-team",
+      "question": "How do you handle a situation where your team is blocked by another team?",
+      "story": "Paid Hints — five-team coordination",
+      "answer": "My first instinct was not to escalate. Escalation would have created resentment. So I went to each EM individually, one on one, before any group meeting happened. Not to ask for help — to understand their world. Those conversations gave me two things: real information about where the genuine constraints were, and the beginning of relationships that made everything that followed easier.\n\nFrom there I did three things to systematically reduce the block. First, I mapped every dependency across all five teams into flow diagrams and shared them openly — nobody had seen the full picture before, and making the interdependencies visible created shared ownership of the problem rather than bilateral negotiations. Second, I built a shared integration component on my team's side that cut the implementation burden for other teams by roughly 50%. I made it easy to say yes by reducing what yes actually cost them. Third, I ran a two-week lightweight experiment first — before asking anyone to commit to the full build. When that came back positive, I walked into every conversation with data instead of a request. The dynamic shifted completely.",
+      "insight": "Being blocked by another team is almost never really about the other team. It's about whether you've made it easy enough for them to help you. The teams weren't blocking us — they were just full. My job was to reduce the cost of their yes until it became the obvious choice."
+    },
+    {
+      "id": "align-conflicting-teams",
+      "question": "Tell me about a time you aligned multiple teams with conflicting priorities.",
+      "story": "Project Arborist",
+      "answer": "At Ancestry I was tasked with building new packaging infrastructure that required integrating with six open-source stacks owned by five separate engineering teams — none of whom had my project in their roadmap. Leadership wanted it in three months. The teams pushed back immediately when our pull requests started landing in their queues.\n\nThe temptation was to escalate — get leadership to mandate their involvement. I deliberately didn't do that. A mandate creates compliance, not collaboration. So I started with individual conversations. Before any group meeting, before any shared roadmap, I met with each EM one on one. Not to pitch the project — to understand their world.\n\nWhat I found was that the resistance wasn't personal — it was structural. Each team was being asked to absorb work that wasn't in their plan with no adjustment to their existing commitments. So I addressed the structural problem directly. I built extensive documentation covering every stack, every integration point, and every effort estimate. I coordinated with leadership to get one month carved out specifically for design work before any development began. Then I brought all five EMs into a group session to map dependencies and build a shared roadmap together.\n\nWe launched in two and a half months — only two weeks past the revised timeline. The five EMs who'd initially pushed back became active collaborators. Three of them contributed to follow-on work.",
+      "insight": "Conflicting priorities are almost never really about priorities — they're about planning visibility and the cost of yes. Alignment isn't something you achieve by winning an argument. It's something you create by making collaboration easier than resistance."
+    },
+    {
+      "id": "influence-no-authority",
+      "question": "Describe a time you had to influence a decision you had no authority over.",
+      "story": "Paid Hints — cross-team prioritization",
+      "answer": "I was trying to get five engineering teams to prioritize work that wasn't in their roadmaps. I had no authority over any of them. I could have escalated to leadership immediately and asked them to mandate it. But that would have created resentment.\n\nSo I went to each EM individually first, built the relationships, and reduced the cost of their yes by building a shared integration component. Most importantly, I ran a two-week experiment to generate the data that would make the business case for them. When results came back positive, I walked into every cross-team conversation with data instead of a request. The project that looked politically impossible before the experiment became straightforward after it.\n\nOnly then did I bring leadership in — not to force the decision, but to formalize the alignment that already existed.",
+      "insight": "Escalation isn't a last resort and it isn't a first move. It's the right tool when the decision requires something you don't have. By validating the hypothesis first, I gave leadership a clear decision point rather than a vague request for cross-team resources."
+    },
+    {
+      "id": "technical-debt-velocity",
+      "question": "How do you balance technical debt vs. shipping velocity?",
+      "story": "Post-incident systemic hardening",
+      "answer": "My framework is simple: technical debt is fine to carry as long as it's named, tracked, and the blast radius is understood. The debt that kills you isn't the debt you know about — it's the debt you've stopped thinking about.\n\nAfter the cascading failure incident, I didn't want to just fix the bug — I wanted to fix the process. I implemented three major changes: lowered alerting thresholds to catch low-volume/high-severity anomalies, implemented mandatory canary windows for all deployments, and initiated a project to decouple legacy flows into their own microservice. That work displaced two features we'd planned that quarter. I made the case to product using the incident data and they agreed immediately.\n\nThe way I balance debt vs. velocity is by making the debt visible. I maintain an explicit risk register for every project — a living document where I force myself to name the things I'm knowingly deferring and what the consequence of deferral looks like. That register is what I bring to product when I need to make the case for hardening work. Data, not opinions.",
+      "insight": "Deferred risk doesn't disappear. It just waits for the worst possible moment to surface. My job is to make that risk visible before it makes itself visible."
+    },
+    {
+      "id": "failure-learned",
+      "question": "Tell me about a failure and what you learned.",
+      "story": "Cascading failure — escalated too late",
+      "answer": "The failure I think about most is a production incident we had after deploying a new feature. All automated tests passed, all smoke tests passed — and about an hour after deployment we had a cascading failure. A legacy flow used by only 5% of our users was triggering a fatal exception that crash-looped our service instances. Because that flow shared process space with our healthy traffic, the crash loop started starving the 95% of resources.\n\nMy immediate response was correct — I triggered a full rollback within five minutes, ran a tight RCA, and we were back to 100% health quickly. That part I handled well.\n\nBut here's what I actually failed at. The architectural debt that caused this wasn't invisible. I knew that legacy flow was unmaintained. I knew it shared process space with production traffic. What I never did was frame it explicitly as a blast-radius risk and get it on the roadmap before it forced its way there through an incident. I had the information. I didn't act on it. I let the debt sit because there was always something more urgent, and I told myself the risk was low because the flow only affected 5% of users. That reasoning was wrong — low usage doesn't mean low risk when the failure mode is process-level contamination.\n\nThe real failure wasn't the incident. It was the three months before the incident where I had enough information to prevent it and chose not to prioritize it.",
+      "insight": "I now maintain an explicit risk register for every project — a living document where I force myself to name the things I'm knowingly deferring and what the consequence of deferral looks like. The cascading failure taught me that deferred risk doesn't disappear. It just waits for the worst possible moment to surface."
+    },
+    {
+      "id": "hardest-decision",
+      "question": "What was the hardest decision you made on that project?",
+      "story": "E2E Redesign",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "product-pushback-feature-swap",
+      "question": "What would you have done if product had pushed back on the feature swap?",
+      "story": "E2E Redesign",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "track-project-health",
+      "question": "How do you track project health without micromanaging?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "incomplete-team",
+      "question": "Tell me about a time you had to deliver with an incomplete or under-resourced team.",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "planning-philosophy",
+      "question": "Planning and execution cycles — walk me through your planning philosophy.",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "do-differently",
+      "question": "What would you do differently if you ran it again?",
+      "story": "Cascading failure",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "team-learned",
+      "question": "What did the team learn from this project?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "escalated-too-late",
+      "question": "Describe a time you escalated too late.",
+      "story": "Cascading failure — deferred risk",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "other-team-negative-impact",
+      "question": "How do you handle situations where another team's work negatively impacts yours?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "upstream-team-mistake",
+      "question": "What would you have done if the upstream team's change had been a mistake?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "represent-team-interests",
+      "question": "Tell me about a time you had to represent your team's interests while compromising for the greater org good.",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "product-no-directional-thinking",
+      "question": "What do you do when Product isn't willing to share directional thinking early?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "org-level-conflict",
+      "question": "Describe a time you helped resolve an org-level conflict that wasn't yours to own.",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "distributed-team-communication",
+      "question": "How do you keep communication healthy across distributed or cross-functional teams?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "build-stakeholder-relationships",
+      "question": "How do you build relationships with stakeholders you don't directly work with?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "escalate-vs-solve",
+      "question": "Escalate vs. solve it yourself — how do you decide?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "peer-pushback",
+      "question": "Tell me about a time a peer EM or stakeholder pushed back hard on your plan. How did you respond?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "skill-gaps",
+      "question": "How do you identify and close skill gaps on your team?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "plateauing-engineers",
+      "question": "How do you identify gaps in engineers who are delivering well but may be plateauing?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "engineer-wrong-direction",
+      "question": "What if an engineer doesn't want to develop in the direction the business needs?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "low-performer",
+      "question": "Walk me through how you've handled a low performer end to end.",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "no-response-to-plan",
+      "question": "What would you have done if he hadn't responded to the development plan?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "manage-team-during-pip",
+      "question": "How did you manage the rest of the team while this was happening?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "retain-top-engineers",
+      "question": "How do you calibrate and retain your top engineers?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "develop-ic-levels",
+      "question": "How do you develop ICs toward Senior or Staff levels?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "ic-wants-growth-no-behaviors",
+      "question": "How do you handle an IC who wants to grow but isn't showing the behaviors that would justify promotion?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "psychological-safety",
+      "question": "How do you build psychological safety on your team?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "psychological-safety-new-team",
+      "question": "How do you build psychological safety with a new team where it doesn't exist yet?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "reshape-team",
+      "question": "Tell me about a time you had to reshape or rebuild a team.",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "engineer-doesnt-fit",
+      "question": "What do you do with an engineer who fundamentally doesn't fit the team's operating model?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "hiring-process",
+      "question": "What does your hiring process look like and how do you assess culture add vs. culture fit?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "team-loves-candidate",
+      "question": "How do you handle a situation where the team loves a candidate but you have a concern?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "bad-hire",
+      "question": "Tell me about a time you made a bad hire. How did you handle it?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "keep-investing-vs-mismatch",
+      "question": "How do you decide when to keep investing in someone vs. when to accept the mismatch?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "team-motivation-uncertainty",
+      "question": "How do you keep your team motivated during periods of uncertainty or org change?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "you-dont-know-whats-happening",
+      "question": "What do you do when you yourself don't know what's going to happen?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "feedback-philosophy",
+      "question": "What's your philosophy on giving feedback and how do you make it stick?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    },
+    {
+      "id": "feedback-resistant",
+      "question": "How do you give feedback to someone who is resistant to it?",
+      "story": "",
+      "answer": "",
+      "insight": ""
+    }
+  ]
+}
