@@ -40,21 +40,28 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // Cache all static assets and data JSON files
+        // Cache JS/CSS/HTML/images/JSON — but NOT PDFs (let those go direct to network)
         globPatterns: ['**/*.{js,css,html,ico,png,svg,json}'],
-        // Increase the size limit for caching (data files can be large)
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024, // 5MB
+        // Explicitly exclude PDFs from service worker interception
+        navigateFallbackDenylist: [/\.pdf$/],
         runtimeCaching: [
           {
+            // JSON data files
             urlPattern: /\/data\/.+\.json$/,
             handler: 'CacheFirst',
             options: {
               cacheName: 'design-data',
               expiration: {
                 maxEntries: 100,
-                maxAgeSeconds: 60 * 60 * 24 * 365, // 1 year
+                maxAgeSeconds: 60 * 60 * 24 * 365,
               },
             },
+          },
+          {
+            // PDFs — always fetch from network, never cache
+            urlPattern: /\.pdf$/,
+            handler: 'NetworkOnly',
           },
         ],
       },
