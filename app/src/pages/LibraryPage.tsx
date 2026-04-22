@@ -6,8 +6,12 @@ import { clearProgress, hydrateProgress } from '../store/progressSlice';
 import { loadAllProgressFromStorage } from '../store/localStorageMiddleware';
 import type { Difficulty } from '../types/design';
 
-// ── Difficulty badge ───────────────────────────────────────────────────────
+// ── Mobile detection ───────────────────────────────────────────────────────
+function isMobile(): boolean {
+  return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+}
 
+// ── Difficulty badge ───────────────────────────────────────────────────────
 const DIFFICULTY_COLOR: Record<Difficulty, string> = {
   Easy:   '#16a34a',
   Medium: '#d97706',
@@ -23,16 +27,23 @@ function DifficultyBadge({ level }: { level: Difficulty }) {
 }
 
 // ── PDF icon link ──────────────────────────────────────────────────────────
+// On mobile: navigate to in-app /pdf viewer (has a Back button)
+// On desktop: open in new tab
 
-function WriteupBtn({ url }: { url: string }) {
+function WriteupBtn({ url, title }: { url: string; title: string }) {
+  const navigate = useNavigate();
+
+  const handleClick = (e: React.MouseEvent) => {
+    if (isMobile()) {
+      e.preventDefault();
+      navigate(`/pdf?url=${encodeURIComponent(url)}&title=${encodeURIComponent(title)}`);
+    }
+  };
+
   return (
-    <a
-      href={url}
-      target="_blank"
-      rel="noopener noreferrer"
-      title="Open PDF"
-      style={{ color: '#0d9488', display: 'inline-flex', alignItems: 'center' }}
-    >
+    <a href={url} target="_blank" rel="noopener noreferrer" title="Open PDF"
+      onClick={handleClick}
+      style={{ color: '#0d9488', display: 'inline-flex', alignItems: 'center' }}>
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
         <polyline points="14 2 14 8 20 8" />
@@ -44,7 +55,6 @@ function WriteupBtn({ url }: { url: string }) {
 }
 
 // ── Table header cell ──────────────────────────────────────────────────────
-
 function Th({ children, width }: { children: React.ReactNode; width?: string }) {
   return (
     <th style={{ textAlign: 'left', padding: '0.625rem 1rem', fontSize: '0.8125rem', fontWeight: 600, color: '#6b7280', borderBottom: '1px solid #e5e7eb', width, whiteSpace: 'nowrap' }}>
@@ -54,7 +64,6 @@ function Th({ children, width }: { children: React.ReactNode; width?: string }) 
 }
 
 // ── Accordion ─────────────────────────────────────────────────────────────
-
 function Accordion({ title, count, defaultOpen = true, children }: {
   title: string; count?: number; defaultOpen?: boolean; children: React.ReactNode;
 }) {
@@ -78,15 +87,14 @@ function Accordion({ title, count, defaultOpen = true, children }: {
   );
 }
 
-// ── Shared action buttons ──────────────────────────────────────────────────
-
-function ActionBtns({ label, onStart, onReset, pdfUrl }: {
-  label: string; onStart: () => void; onReset?: () => void; pdfUrl?: string;
+// ── Action buttons (mobile card) ───────────────────────────────────────────
+function ActionBtns({ label, onStart, onReset, pdfUrl, pdfTitle }: {
+  label: string; onStart: () => void; onReset?: () => void; pdfUrl?: string; pdfTitle?: string;
 }) {
   const btn: React.CSSProperties = { border: 'none', borderRadius: '6px', padding: '0.375rem 0.875rem', fontSize: '0.8125rem', cursor: 'pointer', fontWeight: 600 };
   return (
     <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-      {pdfUrl && <WriteupBtn url={pdfUrl} />}
+      {pdfUrl && <WriteupBtn url={pdfUrl} title={pdfTitle ?? ''} />}
       <button onClick={onStart} style={{ ...btn, backgroundColor: '#0d9488', color: '#ffffff' }}>{label}</button>
       {onReset && <button onClick={onReset} style={{ ...btn, backgroundColor: '#ffffff', color: '#6b7280', border: '1px solid #d1d5db' }}>↺</button>}
     </div>
@@ -94,7 +102,6 @@ function ActionBtns({ label, onStart, onReset, pdfUrl }: {
 }
 
 // ── Design section ─────────────────────────────────────────────────────────
-
 interface DesignItem {
   id: string; name: string; difficulty: Difficulty; pdfUrl?: string;
   hasProgress: boolean; isCompleted: boolean;
@@ -107,7 +114,6 @@ function DesignSection({ items }: { items: DesignItem[] }) {
 
   return (
     <>
-      {/* ── Desktop table ── */}
       <div className="library-table">
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead style={{ backgroundColor: '#f9fafb' }}>
@@ -125,7 +131,7 @@ function DesignSection({ items }: { items: DesignItem[] }) {
                 </td>
                 <td style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #f3f4f6' }}><DifficultyBadge level={item.difficulty} /></td>
                 <td style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #f3f4f6' }}>
-                  {item.pdfUrl ? <WriteupBtn url={item.pdfUrl} /> : <span style={{ color: '#d1d5db' }}>—</span>}
+                  {item.pdfUrl ? <WriteupBtn url={item.pdfUrl} title={item.name} /> : <span style={{ color: '#d1d5db' }}>—</span>}
                 </td>
                 <td style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #f3f4f6' }}>
                   <div style={{ display: 'flex', gap: '0.5rem' }}>
@@ -141,7 +147,6 @@ function DesignSection({ items }: { items: DesignItem[] }) {
         </table>
       </div>
 
-      {/* ── Mobile cards ── */}
       <div className="library-cards">
         {items.map((item) => (
           <div key={item.id} className="library-card">
@@ -150,9 +155,7 @@ function DesignSection({ items }: { items: DesignItem[] }) {
                 {item.name}
                 {item.isCompleted && <span style={{ marginLeft: '0.4rem', fontSize: '0.7rem', fontWeight: 700, color: '#15803d', backgroundColor: '#dcfce7', padding: '0.1rem 0.4rem', borderRadius: '9999px' }}>✓</span>}
               </div>
-              <div className="library-card-meta">
-                <DifficultyBadge level={item.difficulty} />
-              </div>
+              <div className="library-card-meta"><DifficultyBadge level={item.difficulty} /></div>
             </div>
             <div className="library-card-actions">
               <ActionBtns
@@ -160,6 +163,7 @@ function DesignSection({ items }: { items: DesignItem[] }) {
                 onStart={item.onStart}
                 onReset={item.hasProgress ? item.onStartOver : undefined}
                 pdfUrl={item.pdfUrl}
+                pdfTitle={item.name}
               />
             </div>
           </div>
@@ -170,7 +174,6 @@ function DesignSection({ items }: { items: DesignItem[] }) {
 }
 
 // ── Simple section (Reference + Behavioural) ───────────────────────────────
-
 interface SimpleItem {
   id: string; name: string; description: string;
   onNavigate: () => void; pdfUrl: string;
@@ -182,7 +185,6 @@ function SimpleSection({ items }: { items: SimpleItem[] }) {
 
   return (
     <>
-      {/* ── Desktop table ── */}
       <div className="library-table">
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead style={{ backgroundColor: '#f9fafb' }}>
@@ -198,7 +200,7 @@ function SimpleSection({ items }: { items: SimpleItem[] }) {
                     <div style={{ fontSize: '0.9375rem', fontWeight: 600, color: '#111827' }}>{item.name}</div>
                     <div style={{ fontSize: '0.8125rem', color: '#6b7280', marginTop: '0.125rem' }}>{item.description}</div>
                   </td>
-                  <td style={{ padding: '0.75rem 1rem', borderBottom: border, width: '100px' }}><WriteupBtn url={item.pdfUrl} /></td>
+                  <td style={{ padding: '0.75rem 1rem', borderBottom: border, width: '100px' }}><WriteupBtn url={item.pdfUrl} title={item.name} /></td>
                   <td style={{ padding: '0.75rem 1rem', borderBottom: border, width: '180px' }}><button onClick={item.onNavigate} style={btn}>Start</button></td>
                 </tr>
               );
@@ -207,7 +209,6 @@ function SimpleSection({ items }: { items: SimpleItem[] }) {
         </table>
       </div>
 
-      {/* ── Mobile cards ── */}
       <div className="library-cards">
         {items.map((item) => (
           <div key={item.id} className="library-card">
@@ -216,7 +217,7 @@ function SimpleSection({ items }: { items: SimpleItem[] }) {
               <div className="library-card-desc">{item.description}</div>
             </div>
             <div className="library-card-actions">
-              <WriteupBtn url={item.pdfUrl} />
+              <WriteupBtn url={item.pdfUrl} title={item.name} />
               <button onClick={item.onNavigate} style={{ ...btn, padding: '0.375rem 0.75rem' }}>Start</button>
             </div>
           </div>
@@ -227,7 +228,6 @@ function SimpleSection({ items }: { items: SimpleItem[] }) {
 }
 
 // ── Page ───────────────────────────────────────────────────────────────────
-
 interface RefSummary { id: string; name: string; }
 
 const REF_PDF: Record<string, string> = {
@@ -273,36 +273,22 @@ export default function LibraryPage() {
     const progress = records[design.id] ?? null;
     const pdfUrl = design.pdfFile ? `${import.meta.env.BASE_URL}docs/system-design/${design.pdfFile}` : undefined;
     return {
-      id: design.id,
-      name: design.name,
-      difficulty: design.difficulty ?? 'Medium',
-      pdfUrl,
-      hasProgress: progress !== null,
-      isCompleted: progress?.completed ?? false,
+      id: design.id, name: design.name, difficulty: design.difficulty ?? 'Medium', pdfUrl,
+      hasProgress: progress !== null, isCompleted: progress?.completed ?? false,
       onStart: () => navigate(`/attempt/${design.id}`),
       onStartOver: () => { dispatch(clearProgress(design.id)); navigate(`/attempt/${design.id}`); },
     };
   });
 
   const refItems: SimpleItem[] = refs.map((ref) => ({
-    id: ref.id,
-    name: ref.name,
-    description: REF_DESC[ref.id] ?? '',
+    id: ref.id, name: ref.name, description: REF_DESC[ref.id] ?? '',
     onNavigate: () => navigate(`/reference-practice/${ref.id}`),
     pdfUrl: REF_PDF[ref.id] ? `${import.meta.env.BASE_URL}docs/reference/${REF_PDF[ref.id]}` : '',
   }));
 
   const behaviouralItems: SimpleItem[] = [
-    {
-      id: 'scenarios', name: 'Scenarios', description: 'Interview questions mapped to prepared answers',
-      onNavigate: () => navigate('/behavioural/scenarios'),
-      pdfUrl: `${import.meta.env.BASE_URL}docs/behavioural/scenarios.pdf`,
-    },
-    {
-      id: 'stories', name: 'Stories', description: 'Personal leadership and engineering stories',
-      onNavigate: () => navigate('/behavioural/stories'),
-      pdfUrl: `${import.meta.env.BASE_URL}docs/behavioural/stories.pdf`,
-    },
+    { id: 'scenarios', name: 'Scenarios', description: 'Interview questions mapped to prepared answers', onNavigate: () => navigate('/behavioural/scenarios'), pdfUrl: `${import.meta.env.BASE_URL}docs/behavioural/scenarios.pdf` },
+    { id: 'stories',   name: 'Stories',   description: 'Personal leadership and engineering stories',    onNavigate: () => navigate('/behavioural/stories'),   pdfUrl: `${import.meta.env.BASE_URL}docs/behavioural/stories.pdf` },
   ];
 
   return (

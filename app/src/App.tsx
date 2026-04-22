@@ -6,6 +6,7 @@ import AttemptPage from './pages/AttemptPage';
 import ReferencePage from './pages/ReferencePage';
 import ReferencePracticePage from './pages/ReferencePracticePage';
 import BehaviouralPage from './pages/BehaviouralPage';
+import PdfViewerPage from './pages/PdfViewerPage';
 import './index.css';
 
 export default function App() {
@@ -18,6 +19,7 @@ export default function App() {
           <Route path="/reference/:refId" element={<ReferencePage />} />
           <Route path="/reference-practice/:refId" element={<ReferencePracticePage />} />
           <Route path="/behavioural/:sectionId" element={<BehaviouralPage />} />
+          <Route path="/pdf" element={<PdfViewerPage />} />
         </Routes>
       </BrowserRouter>
     </Provider>
