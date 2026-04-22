@@ -22,14 +22,23 @@ export default function PdfViewerPage() {
   if (!pdfUrl) return null;
 
   return (
-    <div style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', backgroundColor: '#1e293b', zIndex: 100 }}>
+    <div style={{
+      position: 'fixed',
+      top: 0, left: 0, right: 0, bottom: 0,
+      display: 'flex',
+      flexDirection: 'column',
+      backgroundColor: '#1e293b',
+      zIndex: 9999,
+      // Ensure it sits above everything including PWA chrome
+      paddingTop: 'env(safe-area-inset-top, 0px)',
+      paddingBottom: 'env(safe-area-inset-bottom, 0px)',
+    }}>
       {/* Header */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: '0.75rem',
         padding: '0.75rem 1rem',
         backgroundColor: '#1e293b',
         flexShrink: 0,
-        paddingTop: 'max(0.75rem, env(safe-area-inset-top))',
       }}>
         <button
           onClick={() => navigate(-1)}
